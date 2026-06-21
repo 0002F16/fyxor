@@ -1,0 +1,19 @@
+{
+  "manifest_version": 3,
+  "name": "Fyxor",
+  "version": "0.1.0",
+  "description": "Automatically read LinkedIn jobs or send highlighted job descriptions to tailor your CV honestly.",
+  "permissions": ["storage", "tabs", "downloads", "contextMenus", "scripting", "activeTab"],
+  "host_permissions": ["https://*.linkedin.com/*", "http://127.0.0.1:8787/*", "https://api-76-13-177-250.sslip.io/*"],
+  "background": { "service_worker": "assets/background.js", "type": "module" },
+  "action": { "default_title": "Open Fyxor", "default_popup": "popup.html" },
+  "content_scripts": [{
+    "matches": ["https://*.linkedin.com/jobs/*"],
+    "js": ["content-loader.js"],
+    "run_at": "document_idle"
+  }],
+  "web_accessible_resources": [{
+    "resources": ["assets/content.js", "assets/storage.js", "assets/api.js"],
+    "matches": ["https://*.linkedin.com/*"]
+  }]
+}

@@ -1,0 +1,37 @@
+<!doctype html>
+<html>
+  <head>
+    <!-- The collections page keeps a generic title, so the scraper must read
+         the selected job from the detail pane DOM, not from document.title. -->
+    <title>Top job picks for you | LinkedIn</title>
+  </head>
+  <body>
+    <!-- Stale detail pane from a previously selected job, hidden by inline
+         style during the SPA transition. Must never be scraped. -->
+    <section class="jobs-details" style="display:none">
+      <h1 class="t-24 t-bold">Old Hidden Role</h1>
+      <div class="job-details-about-the-job-module__description">
+        This stale hidden job description belongs to a previously selected job and must never be returned by the scraper.
+      </div>
+    </section>
+
+    <section class="jobs-details">
+      <div class="job-details-jobs-unified-top-card__job-title">
+        <h1 class="t-24 t-bold">Top Creators Management Project Intern</h1>
+      </div>
+      <div class="job-details-jobs-unified-top-card__company-name">
+        <a href="/company/bytedance">ByteDance</a>
+      </div>
+      <div class="job-details-jobs-unified-top-card__primary-description-container">
+        <span class="tvm__text--low-emphasis">Taguig, National Capital Region, Philippines · Reposted 2 weeks ago · 74 people clicked apply</span>
+      </div>
+
+      <div class="job-details-about-the-job-module">
+        <h2>About the job</h2>
+        <div class="job-details-about-the-job-module__description">
+          Responsibilities: the Top Creator Team partners closely with celebrities, top-tier creators, and rising influencers to accelerate the growth of the e-commerce ecosystem across all categories.
+        </div>
+      </div>
+    </section>
+  </body>
+</html>

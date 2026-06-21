@@ -1,0 +1,23 @@
+# Local Postgres for accounts, cloud sync, and usage tracking.
+# The same service is the basis for the VPS deployment (put the API container
+# and a Caddy/Nginx TLS proxy alongside it there).
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: fyxor
+    ports:
+      - "5432:5432"
+    volumes:
+      - fyxor_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d fyxor"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  fyxor_pgdata:
