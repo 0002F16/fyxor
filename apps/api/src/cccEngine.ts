@@ -129,9 +129,45 @@ type CccResume = {
   languages?: Array<{ language?: string; level?: string }>;
 };
 
-function mapResumeToTailoredCv(resume: CccResume, profile: BaseProfile, job: JobDescription): TailoredCv {
+const normalizeMatchPart = (value: string) => value.trim().toLowerCase().replace(/\s+/g, " ");
+
+export function mapResumeToTailoredCv(resume: CccResume, profile: BaseProfile, job: JobDescription): TailoredCv {
   const now = new Date().toISOString();
-  const byKey = new Map(profile.experiences.map((e) => [`${e.role}__${e.company}`.toLowerCase(), e.id]));
+  const usedSourceIds = new Set<string>();
+
+  const findSourceExperienceId = (
+    role: NonNullable<CccResume["experience"]>[number],
+    index: number
+  ): string => {
+    const title = normalizeMatchPart(role.title || "");
+    const company = normalizeMatchPart(role.company || "");
+    const dates = splitDateRange(role.dates || "");
+    const startDate = normalizeMatchPart(dates.startDate);
+    const endDate = normalizeMatchPart(dates.endDate);
+    const unused = profile.experiences.filter((experience) => !usedSourceIds.has(experience.id));
+
+    const exact = unused.find((experience) =>
+      normalizeMatchPart(experience.role) === title &&
+      normalizeMatchPart(experience.company) === company
+    );
+    const companyAndDates = unused.find((experience) =>
+      company &&
+      normalizeMatchPart(experience.company) === company &&
+      normalizeMatchPart(experience.startDate) === startDate &&
+      normalizeMatchPart(experience.endDate) === endDate
+    );
+    const companyMatches = company
+      ? unused.filter((experience) => normalizeMatchPart(experience.company) === company)
+      : [];
+    const uniqueCompany = companyMatches.length === 1 ? companyMatches[0] : undefined;
+    const positional = profile.experiences[index] && !usedSourceIds.has(profile.experiences[index].id)
+      ? profile.experiences[index]
+      : unused[0];
+    const source = exact || companyAndDates || uniqueCompany || positional;
+    if (!source) return "";
+    usedSourceIds.add(source.id);
+    return source.id;
+  };
 
   const skillCategories: Record<string, string[]> = {};
   for (const [category, value] of Object.entries(resume.skills || {})) {
@@ -152,9 +188,8 @@ function mapResumeToTailoredCv(resume: CccResume, profile: BaseProfile, job: Job
       linkedIn: resume.linkedin || profile.contact.linkedIn
     },
     summary: stripHtml(resume.summary || ""),
-    experiences: (resume.experience || []).map((role) => {
+    experiences: (resume.experience || []).map((role, index) => {
       const { startDate, endDate } = splitDateRange(role.dates || "");
-      const sourceExperienceId = byKey.get(`${role.title || ""}__${role.company || ""}`.toLowerCase()) || "";
       return {
         id: crypto.randomUUID(),
         company: role.company || "",
@@ -162,7 +197,7 @@ function mapResumeToTailoredCv(resume: CccResume, profile: BaseProfile, job: Job
         startDate,
         endDate,
         bullets: (role.bullets || []).map(stripHtml).filter(Boolean),
-        sourceExperienceId,
+        sourceExperienceId: findSourceExperienceId(role, index),
         sourceBulletIndexes: []
       };
     }),

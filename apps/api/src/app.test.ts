@@ -25,7 +25,10 @@ const job = {
 };
 
 let closeServer: (() => Promise<void>) | undefined;
-afterEach(async () => closeServer?.());
+afterEach(async () => {
+  await closeServer?.();
+  closeServer = undefined;
+});
 
 describe("API routes", () => {
   it("serves health and validates a mocked tailored CV response", async () => {
@@ -109,5 +112,154 @@ describe("API routes", () => {
     expect(result.skillCategories).toEqual({ Strategy: ["Roadmapping", "Discovery"], Tools: ["Jira", "Roadmapping"] });
     // Flat union is de-duplicated and drops the empty-named category.
     expect(result.skills).toEqual(["Roadmapping", "Discovery", "Jira"]);
+  });
+
+  it("applies title review after tailoring when source evidence is available", async () => {
+    const now = new Date().toISOString();
+    const experiencedProfile = {
+      ...profile,
+      experiences: [{
+        id: "source-1",
+        company: "Acme",
+        role: "Software Developer",
+        startDate: "2022",
+        endDate: "2024",
+        bullets: ["Built Node.js APIs and database integrations."]
+      }],
+      skills: ["Node.js", "API design"]
+    };
+    const calls: string[] = [];
+    const generator: Generator = {
+      generate: async (input) => {
+        calls.push(input.name);
+        if (input.name === "experience_title_review") {
+          return { titles: [{ sourceExperienceId: "source-1", title: "Backend Developer" }] } as never;
+        }
+        return {
+          id: "cv-reviewed",
+          baseProfileId: "p1",
+          job,
+          outputLanguage: "en",
+          contact: profile.contact,
+          summary: "Backend-focused software developer.",
+          experiences: [{
+            id: "tailored-1",
+            company: "Acme",
+            role: "Software Developer",
+            startDate: "2022",
+            endDate: "2024",
+            bullets: ["Built Node.js APIs and database integrations."],
+            sourceExperienceId: "source-1",
+            sourceBulletIndexes: [0]
+          }],
+          education: [],
+          skills: ["Node.js", "API design"],
+          skillCategories: [{ name: "Backend", skills: ["Node.js", "API design"] }],
+          unsupportedClaims: [],
+          createdAt: now,
+          updatedAt: now
+        } as never;
+      }
+    };
+    const server = createApp(() => generator).listen(0, "127.0.0.1");
+    await new Promise<void>((resolve) => server.once("listening", resolve));
+    closeServer = () => new Promise((resolve) => server.close(() => resolve()));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Missing test server address");
+
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/cvs/tailor`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ profile: experiencedProfile, job, tailoringEngine: "builtin" })
+    });
+    expect(response.status).toBe(200);
+    const result = await response.json();
+    expect(calls).toEqual(["tailored_cv", "experience_title_review"]);
+    expect(result.experiences[0].role).toBe("Backend Developer");
+  });
+
+  it("reviews titles only for experience regeneration", async () => {
+    const now = new Date().toISOString();
+    const experiencedProfile = {
+      ...profile,
+      experiences: [{
+        id: "source-1",
+        company: "Acme",
+        role: "Software Developer",
+        startDate: "2022",
+        endDate: "2024",
+        bullets: ["Built Node.js APIs and database integrations."]
+      }]
+    };
+    const cv = {
+      id: "cv-1",
+      baseProfileId: "p1",
+      job,
+      outputLanguage: "en" as const,
+      contact: profile.contact,
+      summary: "Software developer.",
+      experiences: [{
+        id: "tailored-1",
+        company: "Acme",
+        role: "Software Developer",
+        startDate: "2022",
+        endDate: "2024",
+        bullets: ["Built Node.js APIs."],
+        sourceExperienceId: "source-1",
+        sourceBulletIndexes: [0]
+      }],
+      education: [],
+      skills: ["Node.js"],
+      skillCategories: { Backend: ["Node.js"] },
+      certifications: [],
+      languages: [],
+      sectionOrder: [],
+      style: { preset: "modern" as const },
+      dismissedChecks: [],
+      unsupportedClaims: [],
+      createdAt: now,
+      updatedAt: now
+    };
+
+    for (const section of ["experience", "summary"] as const) {
+      const calls: string[] = [];
+      const generator: Generator = {
+        generate: async (input) => {
+          calls.push(input.name);
+          if (input.name === "experience_title_review") {
+            return { titles: [{ sourceExperienceId: "source-1", title: "Backend Developer" }] } as never;
+          }
+          return {
+            ...cv,
+            skillCategories: [{ name: "Backend", skills: ["Node.js"] }]
+          } as never;
+        }
+      };
+      const server = createApp(() => generator).listen(0, "127.0.0.1");
+      await new Promise<void>((resolve) => server.once("listening", resolve));
+      const address = server.address();
+      if (!address || typeof address === "string") throw new Error("Missing test server address");
+
+      const response = await fetch(`http://127.0.0.1:${address.port}/api/cvs/regenerate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          profile: experiencedProfile,
+          cv,
+          section,
+          experienceId: section === "experience" ? "tailored-1" : undefined
+        })
+      });
+      const result = await response.json();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+
+      expect(response.status).toBe(200);
+      expect(calls).toEqual(section === "experience"
+        ? ["regenerated_cv", "experience_title_review"]
+        : ["regenerated_cv"]);
+      expect(result.experiences[0].role).toBe(section === "experience"
+        ? "Backend Developer"
+        : "Software Developer");
+    }
   });
 });

@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import mammoth from "mammoth";
+import pdfParse from "pdf-parse";
 import { makeDocx, makePdf } from "./export";
 import type { TailoredCv } from "@cv-tailor/shared";
 
@@ -25,5 +27,17 @@ describe("exports", () => {
     expect(docx.subarray(0, 2).toString()).toBe("PK");
     expect(pdf.length).toBeGreaterThan(10_000);
     expect(docx.length).toBeGreaterThan(1000);
+    const [pdfResult, docxResult] = await Promise.all([
+      pdfParse(pdf),
+      mammoth.extractRawText({ buffer: docx })
+    ]);
+    expect((pdfResult as { numpages?: number }).numpages).toBe(1);
+    for (const text of [pdfResult.text, docxResult.value]) {
+      const normalized = text.toLocaleLowerCase();
+      expect(normalized).toContain("łukasz żółć");
+      expect(normalized).toContain("kierownik");
+      expect(normalized).toContain("ćma");
+      expect(normalized).toContain("zarządzanie");
+    }
   }, 30_000);
 });

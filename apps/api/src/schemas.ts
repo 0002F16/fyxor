@@ -47,6 +47,13 @@ export const llmSkillsSchema = z.object({
   skillCategories: z.array(z.object({ name: z.string(), skills: z.array(z.string()) }))
 });
 
+export const llmExperienceTitleReviewSchema = z.object({
+  titles: z.array(z.object({
+    sourceExperienceId: z.string(),
+    title: z.string()
+  }))
+});
+
 export const llmBaseProfileSchema = z.object({
   id: z.string(),
   contact: contactSchema,

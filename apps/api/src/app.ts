@@ -26,6 +26,7 @@ import {
 } from "./schemas.js";
 import { makeDocx, makePdf } from "./export.js";
 import { cccStatus, isCccAvailable, runCccEngine } from "./cccEngine.js";
+import { reviewExperienceTitles } from "./titleReview.js";
 
 const asyncRoute = (fn: express.RequestHandler): express.RequestHandler =>
   (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
@@ -174,20 +175,34 @@ export function createApp(generatorFactory?: () => Generator) {
       // studio pipeline; when it isn't we degrade to the built-in single pass so
       // installs without the Python engine still tailor (instead of hard-failing).
       if (engine === "ccc" && isCccAvailable()) {
-        const cv = tailoredCvSchema.parse(await runCccEngine(input.profile, input.job));
+        const generated = tailoredCvSchema.parse(await runCccEngine(input.profile, input.job));
+        const cv = await reviewExperienceTitles(
+          () => generatorOrThrow(req, generatorFactory),
+          input.profile,
+          input.job,
+          generated
+        );
         if (!reservedEventId) await meter(req, "tailor");
         return res.json(cv);
       }
       if (engine === "ccc") console.warn("CCC engine requested but not configured — falling back to the built-in tailor. Set CCC_ENGINE_ROOT to enable it.");
       const now = new Date().toISOString();
-      const result = await generatorOrThrow(req, generatorFactory).generate({
+      const generator = generatorOrThrow(req, generatorFactory);
+      const result = await generator.generate({
         name: "tailored_cv",
         schema: llmTailoredCvSchema,
         instructions: tailoringPrompt,
         payload: { ...input, cvId: crypto.randomUUID(), now }
       });
+      const generated = tailoredCvSchema.parse({ ...result, ...foldSkillCategories(result.skillCategories, result.skills) });
+      const cv = await reviewExperienceTitles(
+        generator,
+        input.profile,
+        input.job,
+        generated
+      );
       if (!reservedEventId) await meter(req, "tailor");
-      res.json(tailoredCvSchema.parse({ ...result, ...foldSkillCategories(result.skillCategories, result.skills) }));
+      res.json(cv);
     } catch (error) {
       // Tailoring failed — release the reserved slot so the user isn't charged.
       await releaseOnce();
@@ -197,18 +212,35 @@ export function createApp(generatorFactory?: () => Generator) {
 
   app.post("/api/cvs/regenerate", requireAuth, asyncRoute(async (req, res) => {
     const input = regenerationRequestSchema.parse(req.body);
-    const result = await generatorOrThrow(req, generatorFactory).generate({
+    const generator = generatorOrThrow(req, generatorFactory);
+    const result = await generator.generate({
       name: "regenerated_cv",
       schema: llmTailoredCvSchema,
       instructions: regenerationPrompt,
       payload: input
     });
-    await meter(req, "regenerate");
-    res.json(tailoredCvSchema.parse({
+    const generated = tailoredCvSchema.parse({
       ...result,
       ...foldSkillCategories(result.skillCategories, result.skills),
       updatedAt: new Date().toISOString()
-    }));
+    });
+    const requestedSourceExperienceId = input.section === "experience"
+      ? input.cv.experiences.find((experience) => experience.id === input.experienceId)?.sourceExperienceId
+      : undefined;
+    const sourceExperienceIds = requestedSourceExperienceId
+      ? new Set([requestedSourceExperienceId])
+      : new Set<string>();
+    const cv = input.section === "experience"
+      ? await reviewExperienceTitles(
+        generator,
+        input.profile,
+        input.cv.job,
+        generated,
+        sourceExperienceIds
+      )
+      : generated;
+    await meter(req, "regenerate");
+    res.json(cv);
   }));
 
   app.get("/api/data/sync", requireAuth, asyncRoute(async (req, res) => {

@@ -46,6 +46,22 @@ Regenerate only the requested section for the supplied job. Preserve all other C
 skillCategories: when regenerating skills, regroup them into themed categories with a matching flat skills list; otherwise
 copy the existing skillCategories and skills through unchanged.`;
 
+export const experienceTitleReviewPrompt = `${honestyRules}
+Review only the displayed titles of the supplied experience roles for alignment with the target job.
+
+You may replace a broad or differently named title with a more specific, commonly recognized equivalent when the source
+role's bullets and skills clearly prove that framing. Examples include Accountant to AP Accountant, Software Developer to
+Backend Developer, or UX Designer to Product Designer, but only when the actual work supports the replacement.
+
+Hard title rules:
+- Treat sourceRole as the factual anchor. Improve framing; do not invent a different job.
+- Do not add or increase seniority, management, leadership, ownership, professional licensing, employment type, or scope
+  unless it is explicit in the source evidence.
+- Do not cross into a different profession or function merely because the target job uses that title.
+- Prefer a concise, standard ATS-readable title. Do not add slashes, parentheses, explanations, or keyword lists.
+- If the evidence is ambiguous or the current title is already the most accurate framing, return the current title unchanged.
+- Return exactly one decision for each supplied sourceExperienceId and preserve that ID exactly.`;
+
 export const categorizeSkillsPrompt = `${honestyRules}
 Group the supplied list of skills into a small number (about 3-6) of themed categories in skillCategories — for example
 Languages, Frameworks, Tools, Cloud & DevOps, or Soft Skills — choosing names that fit the skills present. If a target role
