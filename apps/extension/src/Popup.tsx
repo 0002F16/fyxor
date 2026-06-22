@@ -13,8 +13,10 @@ import type { LinkedInScanResult } from "./scraper";
 import { sendLinkedInMessage } from "./linkedinMessaging";
 
 // A running tailoring job older than this was almost certainly orphaned by a
-// terminated MV3 service worker; the client backstop timeout is 300s.
-const STALE_MS = 6 * 60 * 1000;
+// terminated MV3 service worker. Must stay greater than the client backstop
+// timeout (api.ts TAILOR_TIMEOUT_MS, 15 min) so a still-running healthy job
+// isn't falsely flagged as orphaned; matches background STALE_TAILORING_MS.
+const STALE_MS = 16 * 60 * 1000;
 
 function Logo() {
   return <span className="popup-logo"><Check size={18} strokeWidth={3} /></span>;

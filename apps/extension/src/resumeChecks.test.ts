@@ -6,7 +6,7 @@ type Doc = Parameters<typeof evaluateResume>[0];
 function baseDoc(overrides: Partial<Doc> = {}): Doc {
   return {
     contact: { name: "Jane Doe", email: "jane@example.com", phone: "+1 555", location: "London", linkedIn: "linkedin.com/in/jane" },
-    summary: "Experienced engineer with a decade building reliable backend systems.",
+    summary: "Experienced software engineer with over a decade building reliable, scalable backend systems for high-traffic products.",
     experiences: [
       { id: "e1", company: "Acme", role: "Engineer", startDate: "2020", endDate: "Present", bullets: ["Shipped X", "Led Y"] }
     ],

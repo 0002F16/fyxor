@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 export const outputLanguageSchema = z.enum(["en", "pl"]);
-export const aiProviderSchema = z.enum(["codex-local", "openai-api", "gemini-api"]);
+export const aiProviderSchema = z.enum(["codex-local", "openai-api", "gemini-api", "groq-api"]);
 export const tailoringEngineSchema = z.enum(["builtin", "ccc"]);
 
 export const contactSchema = z.object({
@@ -61,6 +61,15 @@ function coerceEducation(input: unknown): unknown {
 
 const educationArraySchema = z.preprocess(coerceEducation, z.array(educationEntrySchema)).default([]);
 
+// Per-CV visual style — one of three curated presets. "modern" is the emerald
+// sans look; the two serif presets are intentionally monochrome (classic, ATS-
+// friendly). Resolved into CSS variables by `resumeStyleVars` (live canvas +
+// PDF) and into DOCX values by the export. Kept as an object (not a bare enum)
+// so future per-resume style knobs can be added without another migration.
+export const cvStyleSchema = z.object({
+  preset: z.enum(["modern", "garamond", "times"]).default("modern")
+});
+
 export const baseProfileSchema = z.object({
   id: z.string(),
   contact: contactSchema,
@@ -75,6 +84,7 @@ export const baseProfileSchema = z.object({
   languages: z.array(languageSchema).default([]),
   positioning: positioningSchema.optional(),
   sectionOrder: z.array(z.string()).default([]),
+  style: cvStyleSchema.default({}),
   dismissedChecks: z.array(z.string()).default([]),
   rawText: z.string().default(""),
   updatedAt: z.string()
@@ -114,6 +124,7 @@ export const tailoredCvSchema = z.object({
   certifications: z.array(z.string()).default([]),
   languages: z.array(languageSchema).default([]),
   sectionOrder: z.array(z.string()).default([]),
+  style: cvStyleSchema.default({}),
   dismissedChecks: z.array(z.string()).default([]),
   unsupportedClaims: z.array(unsupportedClaimSchema).default([]),
   createdAt: z.string(),
@@ -199,6 +210,7 @@ export type AiProvider = z.infer<typeof aiProviderSchema>;
 export type TailoringEngine = z.infer<typeof tailoringEngineSchema>;
 export type Language = z.infer<typeof languageSchema>;
 export type Positioning = z.infer<typeof positioningSchema>;
+export type CvStyle = z.infer<typeof cvStyleSchema>;
 
 export const emptyStorageState = (): StorageState => ({
   version: 1,
@@ -209,7 +221,7 @@ export const emptyStorageState = (): StorageState => ({
   tailoringJob: null,
   auth: null,
   settings: {
-    apiBaseUrl: "https://api-76-13-177-250.sslip.io",
+    apiBaseUrl: "http://127.0.0.1:8787",
     aiProvider: "gemini-api",
     tailoringEngine: "ccc",
     onboardingComplete: false,
@@ -221,14 +233,14 @@ export const emptyStorageState = (): StorageState => ({
 });
 
 const VPS_API_URL = "https://api-76-13-177-250.sslip.io";
-const OLD_LOCAL_URL = "http://127.0.0.1:8787";
+const LOCAL_URL = "http://127.0.0.1:8787";
 
 export function migrateStorage(input: unknown): StorageState {
   const parsed = storageStateSchema.safeParse(input);
   const state = parsed.success ? parsed.data : emptyStorageState();
-  // Remap the old localhost default to the VPS so existing installs auto-update.
-  if (state.settings.apiBaseUrl === OLD_LOCAL_URL) {
-    state.settings.apiBaseUrl = VPS_API_URL;
+  // Temporarily remapping to local for dev testing — swap back when pointing at VPS again.
+  if (state.settings.apiBaseUrl === VPS_API_URL) {
+    state.settings.apiBaseUrl = LOCAL_URL;
   }
   // Codex CLI is no longer supported — fall back to Gemini.
   if (state.settings.aiProvider === "codex-local") {
@@ -348,6 +360,52 @@ export function effectiveSectionOrder(order: string[] = []): SectionId[] {
   const known = order.filter((id): id is SectionId => (SECTION_IDS as readonly string[]).includes(id));
   const seen = new Set(known);
   return [...known, ...DEFAULT_SECTION_ORDER.filter((id) => !seen.has(id))];
+}
+
+// ---------------------------------------------------------------------------
+// Resume styling. The canvas keeps its Tailwind classes (text-emerald,
+// font-display, bg-mint, …); those tokens resolve to CSS variables (see
+// tailwind-preset.ts), and this is the single place that computes the variable
+// values from a `style`. Reused by the live canvas and the PDF render so they
+// stay pixel-identical; the DOCX export mirrors the same logic with Word values.
+// ---------------------------------------------------------------------------
+
+// The three presets, fully resolved. Colors are space-separated "R G B" channels
+// (the form the Tailwind tokens compose with <alpha-value>, so opacity modifiers
+// like bg-mint/40 keep working). Serif presets are monochrome — accent and deep
+// collapse to ink, highlight to a soft gray.
+const PRESETS: Record<CvStyle["preset"], {
+  fontBody: string; fontDisplay: string; accent: string; deep: string; highlight: string;
+}> = {
+  modern: {
+    fontBody: "Inter, sans-serif",
+    fontDisplay: "'Plus Jakarta Sans', Inter, sans-serif",
+    accent: "5 150 105", deep: "6 101 70", highlight: "236 253 245"
+  },
+  garamond: {
+    fontBody: "'EB Garamond', Garamond, serif",
+    fontDisplay: "'EB Garamond', Garamond, serif",
+    accent: "15 23 42", deep: "15 23 42", highlight: "241 245 249"
+  },
+  times: {
+    fontBody: "'Times New Roman', Tinos, serif",
+    fontDisplay: "'Times New Roman', Tinos, serif",
+    accent: "15 23 42", deep: "15 23 42", highlight: "241 245 249"
+  }
+};
+
+// Resolve a CvStyle into the CSS custom properties the canvas/PDF read. Returns
+// a plain string map (not React.CSSProperties) so this file stays React-free;
+// callers spread it into an element's inline style.
+export function resumeStyleVars(style?: CvStyle): Record<string, string> {
+  const p = PRESETS[cvStyleSchema.parse(style ?? {}).preset];
+  return {
+    "--cv-accent-rgb": p.accent,
+    "--cv-accent-deep-rgb": p.deep,
+    "--cv-highlight-rgb": p.highlight,
+    "--cv-font-body": p.fontBody,
+    "--cv-font-display": p.fontDisplay
+  };
 }
 
 export { CvDocument, type ResumeDocument } from "./CvDocument.js";

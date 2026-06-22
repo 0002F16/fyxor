@@ -16,6 +16,7 @@ import {
   effectiveSectionOrder,
   formatEducationEntry,
   normalizeSkillCategories,
+  type CvStyle,
   type SectionId,
   type TailoredCv
 } from "@cv-tailor/shared";
@@ -74,12 +75,24 @@ const S = {
   company: 20,    // 10pt
   label: 17       // 8.5pt small caps section label
 };
-const EMERALD = "059669";
-const DEEP = "065F46";
+// ink/muted are not user-customizable, so they stay fixed.
 const INK = "0F172A";
 const MUTED = "4B5563";
-const FONT = "Plus Jakarta Sans";
-const FONT_BODY = "Inter";
+
+// Word can't read the canvas CSS variables, so map each preset to DOCX values
+// here — mirroring resumeStyleVars() but with Word font names (serif faces are
+// referenced by their installed names) and hex colors. Serif presets are
+// monochrome, so their accent/deep collapse to ink.
+const DOCX_PRESETS: Record<CvStyle["preset"], { accent: string; deep: string; display: string; body: string }> = {
+  modern: { accent: "059669", deep: "065F46", display: "Plus Jakarta Sans", body: "Inter" },
+  garamond: { accent: INK, deep: INK, display: "Garamond", body: "Garamond" },
+  times: { accent: INK, deep: INK, display: "Times New Roman", body: "Times New Roman" }
+};
+
+function docxStyle(style?: CvStyle): { accent: string; deep: string; fontDisplay: string; fontBody: string } {
+  const p = DOCX_PRESETS[style?.preset ?? "modern"] ?? DOCX_PRESETS.modern;
+  return { accent: p.accent, deep: p.deep, fontDisplay: p.display, fontBody: p.body };
+}
 
 type Section = {
   heading: string;
@@ -123,14 +136,15 @@ function cvSections(cv: TailoredCv): Section[] {
 }
 
 // A horizontal rule paragraph (simulates a border under headings).
-function hrParagraph(): Paragraph {
+function hrParagraph(color: string): Paragraph {
   return new Paragraph({
-    border: { bottom: { style: BorderStyle.SINGLE, size: 4, color: DEEP } },
+    border: { bottom: { style: BorderStyle.SINGLE, size: 4, color } },
     spacing: { after: 0 }
   });
 }
 
 export async function makeDocx(cv: TailoredCv): Promise<Buffer> {
+  const { accent: EMERALD, deep: DEEP, fontDisplay: FONT, fontBody: FONT_BODY } = docxStyle(cv.style);
   const children: Paragraph[] = [];
 
   // ---- Header ----
@@ -163,7 +177,7 @@ export async function makeDocx(cv: TailoredCv): Promise<Buffer> {
     }));
   }
   // Bottom border under header (mirrors border-b-2 border-deep on the canvas)
-  children.push(hrParagraph());
+  children.push(hrParagraph(DEEP));
   children.push(new Paragraph({ spacing: { after: 160 } }));
 
   // ---- Sections ----

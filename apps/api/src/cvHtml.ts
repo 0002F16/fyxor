@@ -22,13 +22,30 @@ function buildFontFaceCSS(): string {
     [600, "plus-jakarta-sans-latin-600-normal.woff2"],
     [700, "plus-jakarta-sans-latin-700-normal.woff2"]
   ] as const;
+  // Serif faces for the Garamond / Times resume styles.
+  const garamond = [
+    [400, "eb-garamond-latin-400-normal.woff2"],
+    [500, "eb-garamond-latin-500-normal.woff2"],
+    [600, "eb-garamond-latin-600-normal.woff2"],
+    [700, "eb-garamond-latin-700-normal.woff2"]
+  ] as const;
+  const tinos = [
+    [400, "tinos-latin-400-normal.woff2"],
+    [700, "tinos-latin-700-normal.woff2"]
+  ] as const;
+
+  const families: Array<[string, string, ReadonlyArray<readonly [number, string]>]> = [
+    ["Inter", "@fontsource/inter", inter],
+    ["Plus Jakarta Sans", "@fontsource/plus-jakarta-sans", jakarta],
+    ["EB Garamond", "@fontsource/eb-garamond", garamond],
+    ["Tinos", "@fontsource/tinos", tinos]
+  ];
 
   const rules: string[] = [];
-  for (const [weight, file] of inter) {
-    rules.push(`@font-face{font-family:'Inter';font-style:normal;font-weight:${weight};font-display:swap;src:url(data:font/woff2;base64,${fontB64("@fontsource/inter", file)}) format('woff2');unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+2000-206F,U+2074,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD}`);
-  }
-  for (const [weight, file] of jakarta) {
-    rules.push(`@font-face{font-family:'Plus Jakarta Sans';font-style:normal;font-weight:${weight};font-display:swap;src:url(data:font/woff2;base64,${fontB64("@fontsource/plus-jakarta-sans", file)}) format('woff2');unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+2000-206F,U+2074,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD}`);
+  for (const [family, pkg, weights] of families) {
+    for (const [weight, file] of weights) {
+      rules.push(`@font-face{font-family:'${family}';font-style:normal;font-weight:${weight};font-display:swap;src:url(data:font/woff2;base64,${fontB64(pkg, file)}) format('woff2');unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+2000-206F,U+2074,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD}`);
+    }
   }
   return rules.join("\n");
 }

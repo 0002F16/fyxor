@@ -5,10 +5,13 @@ export class ApiError extends Error {}
 // Thrown on a 401 so the UI can drop the stale session and show the sign-in gate.
 export class AuthExpiredError extends ApiError {}
 
-// Default request timeout. Tailoring is much slower (CCC can run a minute or
-// two), so callers below override it with TAILOR_TIMEOUT_MS.
+// Default request timeout. Tailoring is much slower (CCC's multi-step pipeline can
+// run several minutes), so callers below override it with TAILOR_TIMEOUT_MS.
 const DEFAULT_TIMEOUT_MS = 30_000;
-const TAILOR_TIMEOUT_MS = 300_000;
+// 15 min — comfortably covers a CCC + Groq multi-step run while staying under CCC's
+// 20-min server cap (cccEngine RUN_TIMEOUT_MS). The orphan watchdogs (background
+// STALE_TAILORING_MS / popup STALE_MS) must stay greater than this.
+const TAILOR_TIMEOUT_MS = 900_000;
 
 async function request<T>(baseUrl: string, provider: AiProvider, path: string, init?: RequestInit, timeoutMs = DEFAULT_TIMEOUT_MS, externalSignal?: AbortSignal): Promise<T> {
   const token = await getAuthToken();

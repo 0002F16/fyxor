@@ -183,6 +183,7 @@ function mapResumeToTailoredCv(resume: CccResume, profile: BaseProfile, job: Job
       ? resume.languages.map((l) => ({ language: l.language || "", level: l.level || "" }))
       : profile.languages),
     sectionOrder: profile.sectionOrder ?? [],
+    style: profile.style,
     dismissedChecks: [],
     unsupportedClaims: [],
     createdAt: now,
@@ -207,21 +208,43 @@ export async function runCccEngine(profile: BaseProfile, job: JobDescription): P
     const cccEnv = loadCccDotEnv();
     const mergedEnv = { ...cccEnv, ...process.env } as Record<string, string>;
 
-    // Prefer Gemini (the CCC engine's native default) to avoid OpenAI quota issues.
-    // Fall back to OpenAI only if no Gemini key is available.
+    const cccProvider = process.env.CCC_LLM_PROVIDER || "gemini";
     const geminiKey = mergedEnv.GEMINI_API_KEY || "";
-    const useGemini = Boolean(geminiKey) && (process.env.CCC_LLM_PROVIDER || "gemini") === "gemini";
+
+    let providerArgs: string[];
+    if (cccProvider === "groq") {
+      providerArgs = [
+        "--llm-provider", "openai",
+        "--openai-api-key", mergedEnv.GROQ_API_KEY || "",
+        "--openai-model", mergedEnv.GROQ_MODEL || "meta-llama/llama-4-scout-17b-16e-instruct",
+        "--openai-base-url", "https://api.groq.com/openai/v1",
+      ];
+    } else if (cccProvider === "openai") {
+      providerArgs = [
+        "--llm-provider", "openai",
+        "--openai-model", mergedEnv.OPENAI_MODEL || "gpt-4.1-mini",
+        "--openai-api-key", mergedEnv.OPENAI_API_KEY || "",
+      ];
+    } else {
+      // Default: Gemini
+      providerArgs = [
+        "--llm-provider", "gemini",
+        "--gemini-model", mergedEnv.GEMINI_MODEL || "gemini-2.5-flash",
+        "--gemini-api-key", geminiKey,
+      ];
+    }
+
     const args = [
       ENGINE_SCRIPT,
       "--client-name", profile.contact.name || "candidate",
       "--profile-file", profileFile,
       "--job-file", jobFile,
       "--output-dir", outputDir,
-      ...(useGemini
-        ? ["--llm-provider", "gemini", "--gemini-model", mergedEnv.GEMINI_MODEL || "gemini-2.5-flash", "--gemini-api-key", geminiKey]
-        : ["--llm-provider", "openai", "--openai-model", mergedEnv.OPENAI_MODEL || "gpt-4.1-mini", "--openai-api-key", mergedEnv.OPENAI_API_KEY || ""])
+      ...providerArgs,
     ];
 
+    const startedAt = Date.now();
+    console.log(`[ccc] start provider=${cccProvider} model=${mergedEnv.GROQ_MODEL || mergedEnv.GEMINI_MODEL || "?"}`);
     let stdout = "";
     try {
       ({ stdout } = await execFileAsync(PYTHON, args, {
@@ -236,10 +259,12 @@ export async function runCccEngine(profile: BaseProfile, job: JobDescription): P
       const errorTxt = runDir && existsSync(join(runDir, "error.txt"))
         ? await readFile(join(runDir, "error.txt"), "utf8").catch(() => "")
         : "";
+      console.log(`[ccc] failed after ${Date.now() - startedAt}ms`);
       throw new Error(`CCC engine run failed. ${errorTxt.trim() || (err.stderr || "").trim() || err.message || "Unknown error"}`);
     }
 
     const runDir = extractRunDir(stdout);
+    console.log(`[ccc] done in ${Date.now() - startedAt}ms (runDir=${runDir})`);
     if (!runDir) throw new Error("CCC engine did not report a run directory.");
     const resumePath = join(runDir, "resume.json");
     if (!existsSync(resumePath)) {

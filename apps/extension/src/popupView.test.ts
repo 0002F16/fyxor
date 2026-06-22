@@ -4,7 +4,7 @@ import { activeTailoringFor, selectPopupView } from "./popupView";
 
 const profile = (): BaseProfile => ({
   id: makeId("profile"), contact: { name: "", email: "", phone: "", location: "", linkedIn: "" },
-  targetRole: "", outputLanguage: "en", summary: "", experiences: [], education: [], skills: [], skillCategories: {}, certifications: [], languages: [], sectionOrder: [], dismissedChecks: [], rawText: "", updatedAt: ""
+  targetRole: "", outputLanguage: "en", summary: "", experiences: [], education: [], skills: [], skillCategories: {}, certifications: [], languages: [], sectionOrder: [], style: { preset: "modern" }, dismissedChecks: [], rawText: "", updatedAt: ""
 });
 
 const job = (): JobDescription => ({ title: "Engineer", company: "Acme", location: "", description: "x".repeat(40), url: "", source: "manual" });

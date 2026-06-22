@@ -12,6 +12,7 @@ const cv: TailoredCv = {
   skills: ["Zarządzanie"], skillCategories: {},
   certifications: ["PMP — Project Management Institute"], languages: [{ language: "Polski", level: "Native" }],
   sectionOrder: [],
+  style: { preset: "garamond" },
   dismissedChecks: [],
   unsupportedClaims: [],
   createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()

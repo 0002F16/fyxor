@@ -1,4 +1,4 @@
-import { createElement, Fragment, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import React, { createElement, Fragment, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { ChevronDown, ChevronUp, Globe, Linkedin, Mail, MapPin, Phone, Plus, RefreshCw, X } from "lucide-react";
 import {
   educationHasContent,
@@ -7,7 +7,9 @@ import {
   formatEducationEntry,
   makeId,
   normalizeSkillCategories,
+  resumeStyleVars,
   type BaseProfile,
+  type CvStyle,
   type EducationEntry,
   type SectionId
 } from "@cv-tailor/shared";
@@ -26,6 +28,7 @@ export type ResumeDocument = {
   certifications: string[];
   languages: BaseProfile["languages"];
   sectionOrder?: string[];
+  style?: CvStyle;
   job?: { title?: string };
 };
 
@@ -469,9 +472,9 @@ export function CvDocument({ cv, headline: headlineProp, editable = false, onCha
   };
 
   return (
-    <article ref={pageRef} className={editable
-      ? "cv-document cv-canvas relative mx-auto w-[794px] max-w-full bg-white px-[48px] py-[48px] font-sans text-ink shadow-soft"
-      : "cv-document mx-auto w-[794px] max-w-full bg-white px-[48px] py-[48px] font-sans text-ink shadow-soft"}>
+    <article ref={pageRef} style={resumeStyleVars(cv.style) as React.CSSProperties} className={editable
+      ? "cv-document cv-canvas relative mx-auto w-[794px] max-w-full bg-white px-[96px] py-[96px] font-sans text-ink shadow-soft"
+      : "cv-document mx-auto w-[794px] max-w-full bg-white px-[96px] py-[96px] font-sans text-ink shadow-soft"}>
       {editable && pageBreaks.map((top, index) => (
         <div key={index} className="cv-page-guide" style={{ top }}>
           <span className="cv-page-guide-label">Page {index + 2}</span>

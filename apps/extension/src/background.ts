@@ -15,7 +15,23 @@ interface TailorPayload {
 // MV3 service worker; also the window inside which a duplicate start is treated
 // as a concurrent double-fire rather than a fresh request. Matches the popup's
 // client-side watchdog (Popup.tsx STALE_MS).
-const STALE_TAILORING_MS = 6 * 60 * 1000;
+// Must stay GREATER than the client tailor timeout (api.ts TAILOR_TIMEOUT_MS) so
+// the orphan watchdog only catches a slot left behind by a dead worker, never a
+// still-running healthy job. 16 min = 1 min past the 15-min client cap.
+const STALE_TAILORING_MS = 16 * 60 * 1000;
+
+// MV3 reclaims idle service workers after ~30s; a lone in-flight fetch doesn't
+// reliably keep the worker alive, so a long CCC run gets killed mid-request.
+// Pinging a no-permission extension API every 20s (under the idle window) resets
+// the worker's idle timer and keeps it alive for the duration of a tailor run.
+let keepAliveTimer: ReturnType<typeof setInterval> | null = null;
+function startKeepAlive() {
+  if (keepAliveTimer) return; // defensive: never stack intervals
+  keepAliveTimer = setInterval(() => { void chrome.runtime.getPlatformInfo(); }, 20_000);
+}
+function stopKeepAlive() {
+  if (keepAliveTimer) { clearInterval(keepAliveTimer); keepAliveTimer = null; }
+}
 
 // A "running" job left in storage after the service worker restarted can only
 // be an orphan — its in-flight promise died with the previous worker. Flip it
@@ -45,6 +61,7 @@ async function runTailoring(payload: TailorPayload) {
   const startedAt = Date.now();
   const controller = new AbortController();
   activeRun = { controller, startedAt };
+  startKeepAlive();
   await setTailoringJob({ status: "running", error: "", cvId: "", jobKey, startedAt });
   try {
     const cv = await api.tailor(payload.apiBaseUrl, payload.aiProvider, payload.profile, payload.job, payload.tailoringEngine, controller.signal);
@@ -74,6 +91,7 @@ async function runTailoring(payload: TailorPayload) {
     await setTailoringJob({ status: "error", error: (cause as Error).message, cvId: "", jobKey, startedAt: 0 });
   } finally {
     if (activeRun?.startedAt === startedAt) activeRun = null;
+    stopKeepAlive();
   }
 }
 
@@ -82,6 +100,7 @@ async function runTailoring(payload: TailorPayload) {
 function cancelTailoring() {
   activeRun?.controller.abort();
   activeRun = null;
+  stopKeepAlive();
   void setTailoringJob(null);
   void chrome.action.setBadgeText({ text: "" });
 }

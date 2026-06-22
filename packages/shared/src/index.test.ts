@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyRegeneratedSection, baseProfileSchema, bulletHasMetric, educationHasContent, emptyStorageState, flattenSkillCategories, formatEducationEntry, migrateStorage, normalizeSkillCategories, tailoredCvSchema, tailoringJobKey } from "./index";
+import { applyRegeneratedSection, baseProfileSchema, bulletHasMetric, educationHasContent, emptyStorageState, flattenSkillCategories, formatEducationEntry, migrateStorage, normalizeSkillCategories, resumeStyleVars, tailoredCvSchema, tailoringJobKey } from "./index";
 
 describe("applyRegeneratedSection", () => {
   // Builds a valid TailoredCv the user has been editing, with distinct content
@@ -159,5 +159,28 @@ describe("education entries", () => {
     expect(fmt.subtitle).toBe("A.B. in Economics, Magna Cum Laude · GPA 3.8");
     expect(fmt.meta).toBe("May 2024");
     expect(fmt.bullets).toEqual(["Econometrics"]);
+  });
+});
+
+describe("resumeStyleVars", () => {
+  it("defaults to the modern emerald sans preset when style is undefined", () => {
+    const v = resumeStyleVars(undefined);
+    expect(v["--cv-accent-rgb"]).toBe("5 150 105"); // #059669
+    expect(v["--cv-font-body"]).toBe("Inter, sans-serif");
+    expect(v["--cv-font-display"]).toBe("'Plus Jakarta Sans', Inter, sans-serif");
+  });
+
+  it("maps the serif presets to serif fonts", () => {
+    expect(resumeStyleVars({ preset: "garamond" })["--cv-font-body"]).toBe("'EB Garamond', Garamond, serif");
+    expect(resumeStyleVars({ preset: "times" })["--cv-font-body"]).toBe("'Times New Roman', Tinos, serif");
+  });
+
+  it("makes serif presets monochrome (every accent collapses to ink)", () => {
+    for (const preset of ["garamond", "times"] as const) {
+      const v = resumeStyleVars({ preset });
+      expect(v["--cv-accent-rgb"]).toBe("15 23 42"); // #0f172a ink
+      expect(v["--cv-accent-deep-rgb"]).toBe("15 23 42");
+      expect(v["--cv-highlight-rgb"]).toBe("241 245 249"); // #f1f5f9
+    }
   });
 });

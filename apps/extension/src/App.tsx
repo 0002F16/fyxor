@@ -2,11 +2,12 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle, ArrowLeft, ArrowRight, BriefcaseBusiness, Check, ChevronDown, Cloud, CloudOff,
   Download, FilePenLine, FileText, Lightbulb, LoaderCircle, LogOut, Mail, MousePointerClick,
-  PenLine, Pin, Plus, Save, Sparkles, Trash2, Upload, User, X
+  Palette, PenLine, Pin, Plus, Save, Sparkles, Trash2, Upload, User, X
 } from "lucide-react";
 import {
   applyRegeneratedSection,
   bulletHasMetric,
+  cvStyleSchema,
   educationHasContent,
   effectiveSectionOrder,
   flattenSkillCategories,
@@ -15,6 +16,7 @@ import {
   normalizeSkillCategories,
   type ApplicationRecord,
   type BaseProfile,
+  type CvStyle,
   type JobDescription,
   type StorageState,
   type TailoredCv,
@@ -246,7 +248,7 @@ function Onboarding({ state, onChange, initialMode = "upload" }: { state: Storag
   const [rawText, setRawText] = useState(state.profile?.rawText || "");
   const [profile, setProfile] = useState<BaseProfile>(state.profile || {
     id: makeId("profile"), contact: { name: "", email: "", phone: "", location: "", linkedIn: "" },
-    targetRole: "", outputLanguage: "en", summary: "", experiences: [], education: [], skills: [], skillCategories: {}, certifications: [], languages: [], sectionOrder: [], dismissedChecks: [], rawText: "", updatedAt: new Date().toISOString()
+    targetRole: "", outputLanguage: "en", summary: "", experiences: [], education: [], skills: [], skillCategories: {}, certifications: [], languages: [], sectionOrder: [], style: { preset: "modern" }, dismissedChecks: [], rawText: "", updatedAt: new Date().toISOString()
   });
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
@@ -481,6 +483,37 @@ function downloadBlob(blob: Blob, fileName: string) {
   setTimeout(() => URL.revokeObjectURL(url), 3000);
 }
 
+const STYLE_PRESETS: Array<{ id: CvStyle["preset"]; label: string; hint: string }> = [
+  { id: "modern", label: "Modern", hint: "Sans-serif · emerald accent" },
+  { id: "garamond", label: "Garamond", hint: "Serif · monochrome" },
+  { id: "times", label: "Times", hint: "Serif · monochrome" }
+];
+
+// Per-resume style preset. Edits the `style` object on the CV/profile, which
+// drives both the live canvas and the PDF/DOCX export. Shared by the tailored-CV
+// editor and the base-resume editor.
+function StylePanel({ value, onChange }: { value?: CvStyle; onChange: (style: CvStyle) => void }) {
+  const preset = cvStyleSchema.parse(value ?? {}).preset;
+  return (
+    <div className="card">
+      <p className="flex items-center gap-2 text-sm font-semibold"><Palette size={15} /> Style</p>
+      <p className="mt-1 text-xs text-muted">Applies to the preview and your PDF/DOCX downloads.</p>
+      <div className="mt-3 space-y-1.5">
+        {STYLE_PRESETS.map((p) => (
+          <button key={p.id} onClick={() => onChange({ preset: p.id })}
+            className={`flex w-full items-center justify-between rounded-lg border px-3 py-2 text-left transition ${preset === p.id ? "border-emerald bg-mint/50" : "border-line hover:border-emerald/50"}`}>
+            <span>
+              <span className="block text-sm font-semibold text-ink">{p.label}</span>
+              <span className="block text-xs text-muted">{p.hint}</span>
+            </span>
+            {preset === p.id && <Check size={16} className="shrink-0 text-emerald" />}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function Editor({ state, cvId, onChange }: { state: StorageState; cvId: string; onChange: (s: StorageState) => void }) {
   const [cv, setCv] = useState(state.drafts[cvId]);
   const [busy, setBusy] = useState("");
@@ -536,6 +569,7 @@ function Editor({ state, cvId, onChange }: { state: StorageState; cvId: string; 
         <InlineEditHint saveState={saveState}>Click any line in the resume to rewrite it. Hover a section heading to <span className="font-semibold text-emerald">Regenerate</span> or reorder with the ▲▼ arrows.</InlineEditHint>
         <StrengthPanel state={state} doc={currentCv} kind="tailored" onChange={onChange}
           onDismiss={(id) => { setCv({ ...currentCv, dismissedChecks: [...(currentCv.dismissedChecks ?? []), id] }); markEdited.editing(); }} />
+        <StylePanel value={currentCv.style} onChange={(style) => { setCv({ ...currentCv, style }); markEdited.editing(); }} />
         {showEducationNudge && (
           <div className="rounded-2xl border border-emerald bg-mint/40 p-4">
             <p className="text-sm font-semibold text-deep">Lead with Education?</p>
@@ -596,6 +630,7 @@ function ResumeView({ state, onChange }: { state: StorageState; onChange: (s: St
         <InlineEditHint saveState={saveState}>Click any line to rewrite it. Changes save to your base resume.</InlineEditHint>
         <StrengthPanel state={state} doc={profile} kind="base" onChange={onChange}
           onDismiss={(id) => { setProfile({ ...profile, dismissedChecks: [...(profile.dismissedChecks ?? []), id] }); markEdited.editing(); }} />
+        <StylePanel value={profile.style} onChange={(style) => { setProfile({ ...profile, style }); markEdited.editing(); }} />
         <button className="btn-secondary w-full" onClick={() => location.hash = "#onboarding"}><PenLine size={16} /> Redo step-by-step setup</button>
       </aside>
     </div>

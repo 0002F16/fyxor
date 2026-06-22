@@ -68,6 +68,17 @@ export function createApp(generatorFactory?: () => Generator) {
 
   app.use(express.json({ limit: "15mb" }));
 
+  // Lightweight request log: shows every request's method, path, status and
+  // duration on finish — the signal we need to tell "request never arrived" from
+  // "arrived and succeeded" when diagnosing slow/hung tailoring.
+  app.use((req, res, next) => {
+    const started = Date.now();
+    res.on("finish", () => {
+      console.log(`${req.method} ${req.path} → ${res.statusCode} (${Date.now() - started}ms)`);
+    });
+    next();
+  });
+
   // Validates the bearer session and attaches req.userId, else 401.
   const requireAuth: express.RequestHandler = async (req, res, next) => {
     if (testMode) { (req as AuthedRequest).userId = "test-user"; return next(); }
