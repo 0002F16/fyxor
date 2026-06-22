@@ -3,7 +3,6 @@ import { ArrowLeft, Check, ExternalLink, Home, LayoutDashboard, LoaderCircle, Sp
 import { activeTailoringFor, selectPopupView } from "./popupView";
 import {
   migrateStorage,
-  tailoringJobKey,
   type JobDescription,
   type StorageState,
 } from "@cv-tailor/shared";
@@ -46,6 +45,7 @@ export function Popup() {
   const [job, setJob] = useState<JobDescription | null>(null);
   const [error, setError] = useState("");
   const [linkedinScan, setLinkedinScan] = useState<LinkedInScanResult | null>(null);
+  const [startingTailoring, setStartingTailoring] = useState(false);
 
   useEffect(() => {
     Promise.all([getState(), waitForLinkedInScan()]).then(([stored, scan]) => {
@@ -99,17 +99,16 @@ export function Popup() {
   }
 
   async function generate() {
-    if (!state?.profile || !job) return;
+    if (!state?.profile || !job || startingTailoring) return;
     setError("");
-    // Optimistically flip to "running" before messaging the worker so the
-    // spinner appears on the first click and further clicks are inert — this is
-    // the client half of the single-flight guard (the background worker enforces
-    // it authoritatively). Persisting it also drives the busy UI via the
-    // storage.onChanged listener above.
-    const jobKey = tailoringJobKey(job);
-    await setTailoringJob({ status: "running", error: "", cvId: "", jobKey, startedAt: Date.now() });
+    // The background worker owns the persisted running slot. Persisting an
+    // optimistic slot here used to make the worker mistake the first click for
+    // a duplicate and return before calling the API, leaving an endless spinner.
+    // This local flag gives immediate feedback until the worker publishes the
+    // authoritative running state.
+    setStartingTailoring(true);
     try {
-      await chrome.runtime.sendMessage({
+      const response = await chrome.runtime.sendMessage({
         type: "CV_TAILOR_START_TAILORING",
         payload: {
           apiBaseUrl: state.settings.apiBaseUrl,
@@ -119,12 +118,11 @@ export function Popup() {
           tailoringEngine: state.settings.tailoringEngine
         }
       });
+      if (!response?.ok) setError("Another tailoring run is already in progress.");
     } catch {
-      // The background worker couldn't receive the message; clear the optimistic
-      // spinner and tell the user, rather than stranding them on a spinner that
-      // will never resolve.
-      await setTailoringJob(null);
       setError("Couldn't reach the extension background. Please try again.");
+    } finally {
+      setStartingTailoring(false);
     }
   }
 
@@ -133,7 +131,7 @@ export function Popup() {
   // (see activeTailoringFor) — a finished/old job must not hijack the UI for a
   // different, freshly selected job.
   const activeTailoring = activeTailoringFor(tailoringJob, job);
-  const busy = activeTailoring?.status === "running";
+  const busy = startingTailoring || activeTailoring?.status === "running";
   const tailorStage = useStagedProgress(busy, TAILOR_STAGES);
 
   if (!state) return <div className="popup-loading"><LoaderCircle className="animate-spin" size={18} /> Loading Fyxor...</div>;

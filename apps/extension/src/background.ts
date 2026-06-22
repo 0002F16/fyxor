@@ -11,15 +11,6 @@ interface TailorPayload {
   tailoringEngine: TailoringEngine;
 }
 
-// A "running" job older than this was almost certainly orphaned by a terminated
-// MV3 service worker; also the window inside which a duplicate start is treated
-// as a concurrent double-fire rather than a fresh request. Matches the popup's
-// client-side watchdog (Popup.tsx STALE_MS).
-// Must stay GREATER than the client tailor timeout (api.ts TAILOR_TIMEOUT_MS) so
-// the orphan watchdog only catches a slot left behind by a dead worker, never a
-// still-running healthy job. 16 min = 1 min past the 15-min client cap.
-const STALE_TAILORING_MS = 16 * 60 * 1000;
-
 // MV3 reclaims idle service workers after ~30s; a lone in-flight fetch doesn't
 // reliably keep the worker alive, so a long CCC run gets killed mid-request.
 // Pinging a no-permission extension API every 20s (under the idle window) resets
@@ -47,23 +38,25 @@ async function reconcileOrphanedTailoring() {
 // runs at a time (enforced by the single-flight guard below).
 let activeRun: { controller: AbortController; startedAt: number } | null = null;
 
-async function runTailoring(payload: TailorPayload) {
+function startTailoring(payload: TailorPayload): boolean {
+  // Only an actual in-memory run is authoritative. The popup may have UI state
+  // in storage, but treating that as an active request drops the first click
+  // before fetch() ever runs. Acquire this lock synchronously, before any await,
+  // so two messages delivered back-to-back cannot both start.
+  if (activeRun) return false;
+
   const jobKey = tailoringJobKey(payload.job);
-  // Single-flight guard: one tailoring at a time. The popup writes a "running"
-  // slot optimistically before messaging us, and rapid clicks can fire several
-  // messages before that write lands — accept only the first and drop any
-  // concurrent duplicate so we don't spawn parallel runs (duplicate
-  // applications, duplicate usage charges).
-  const existing = (await getState()).tailoringJob;
-  if (existing?.status === "running" && existing.startedAt && Date.now() - existing.startedAt < STALE_TAILORING_MS && existing.jobKey === jobKey) {
-    return;
-  }
   const startedAt = Date.now();
   const controller = new AbortController();
   activeRun = { controller, startedAt };
   startKeepAlive();
-  await setTailoringJob({ status: "running", error: "", cvId: "", jobKey, startedAt });
+  void runTailoring(payload, jobKey, startedAt, controller).catch(console.error);
+  return true;
+}
+
+async function runTailoring(payload: TailorPayload, jobKey: string, startedAt: number, controller: AbortController) {
   try {
+    await setTailoringJob({ status: "running", error: "", cvId: "", jobKey, startedAt });
     const cv = await api.tailor(payload.apiBaseUrl, payload.aiProvider, payload.profile, payload.job, payload.tailoringEngine, controller.signal);
     // The user cancelled while the request was in flight (the Cancel handler
     // aborts this controller and clears the slot). Discard the result so a CV
@@ -177,9 +170,8 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === "CV_TAILOR_START_TAILORING") {
-    runTailoring(message.payload as TailorPayload).catch(console.error);
-    sendResponse({ ok: true });
-    return true;
+    sendResponse({ ok: startTailoring(message.payload as TailorPayload) });
+    return;
   }
   if (message?.type === "CV_TAILOR_CANCEL_TAILORING") {
     cancelTailoring();
