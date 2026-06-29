@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle, ArrowLeft, ArrowRight, BriefcaseBusiness, Check, ChevronDown, Cloud, CloudOff,
-  Copy, Download, ExternalLink, FilePenLine, FileText, Lightbulb, LoaderCircle, LogOut,
+  Copy, Download, Eye, ExternalLink, FilePenLine, FileText, Files, Lightbulb, LoaderCircle, LogOut,
   MoreVertical, MousePointerClick, Palette, PenLine, Pin, Plus, Reply, Save, Send, Sparkles,
   Trash2, Upload, X
 } from "lucide-react";
@@ -18,6 +18,7 @@ import {
   migrateStorage,
   missingStructuredProfileEvidence,
   normalizeSkillCategories,
+  resumeStyleVars,
   type ApplicationRecord,
   type ApplicationStatus,
   type AiProvider,
@@ -30,6 +31,7 @@ import {
 import { api, ApiError, AuthExpiredError } from "./api";
 import { authClient } from "./auth";
 import { CvDocument } from "@cv-tailor/shared";
+import { PaginatedPreview } from "./PaginatedPreview";
 import { ResumeStrength } from "./ResumeStrength";
 import { evaluateResume, sectionCompleteness, type ProfileSectionId } from "./resumeChecks";
 import { clearAuthSession, clearAuthToken, getState, setAuthSession, setState, updateState } from "./storage";
@@ -167,6 +169,7 @@ function StrengthPanel({ state, doc, kind, onDismiss, onChange }: {
 }
 
 function QualitySignals({ cv }: { cv: TailoredCv }) {
+  const [open, setOpen] = useState(true);
   const dimensions = [
     ["truthfulness", "Evidence"],
     ["relevance", "Relevance"],
@@ -175,27 +178,39 @@ function QualitySignals({ cv }: { cv: TailoredCv }) {
     ["appropriateness", "Appropriateness"]
   ] as const;
   const findings = cv.evaluation?.checks.filter((finding) => finding.status !== "pass") ?? [];
+  const scores = dimensions.map(([key]) => cv.evaluation?.scores[key]).filter((s): s is number => s != null);
+  const overall = scores.length ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length) : null;
+  const ready = cv.readiness === "ready";
   return <div className="card">
-    <div className="flex items-center justify-between gap-2">
-      <div className="flex items-center gap-2 text-sm font-semibold"><Sparkles size={16} className="text-emerald" /> Quality review</div>
-      <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold uppercase ${cv.readiness === "ready" ? "bg-mint text-deep" : "bg-red-50 text-red-700"}`}>{cv.readiness.replaceAll("-", " ")}</span>
-    </div>
-    <div className="mt-3 grid grid-cols-2 gap-2">
-      {dimensions.map(([key, label]) => {
-        const score = cv.evaluation?.scores[key];
-        return <div key={key} className="rounded-lg border border-line px-2 py-1.5">
-          <p className="text-[10px] font-semibold uppercase tracking-wide text-muted">{label}</p>
-          <p className={`text-sm font-bold ${(score ?? 0) >= 80 ? "text-emerald" : "text-amber-600"}`}>{score == null ? "Pending" : `${score}%`}</p>
-        </div>;
-      })}
-    </div>
-    {findings.length > 0 && <div className="mt-3 space-y-2">
-      {findings.slice(0, 6).map((finding) => <div key={finding.id} className={`rounded-lg border p-2 text-xs ${finding.status === "fail" ? "border-red-200 bg-red-50 text-red-800" : "border-amber-200 bg-amber-50 text-amber-900"}`}>
-        <p className="font-semibold">{finding.label}</p><p className="mt-0.5">{finding.detail}</p>
-      </div>)}
-      {cv.readiness !== "ready" && <button className="btn-secondary w-full text-xs" onClick={() => { location.hash = "#resume"; }}>Add missing evidence to base CV</button>}
+    <button type="button" className="flex w-full items-center justify-between gap-2 text-left" onClick={() => setOpen((o) => !o)}>
+      <span className="flex items-center gap-2 text-sm font-semibold"><Sparkles size={16} className="text-emerald" /> Quality review</span>
+      <span className="flex items-center gap-2">
+        <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold uppercase ${ready ? "bg-mint text-deep" : "bg-red-50 text-red-700"}`}>{cv.readiness.replaceAll("-", " ")}</span>
+        <ChevronDown size={15} className={`text-muted transition-transform ${open ? "rotate-180" : ""}`} />
+      </span>
+    </button>
+    {overall != null && <div className="mt-3">
+      <div className="flex items-center justify-between text-[11px] font-semibold"><span className="text-muted">Overall</span><span className={overall >= 80 ? "text-emerald" : "text-amber-600"}>{overall}%</span></div>
+      <div className="quality-bar mt-1"><div className={`quality-bar-fill ${overall >= 80 ? "is-ok" : "is-warn"}`} style={{ width: `${overall}%` }} /></div>
     </div>}
-    <p className="mt-3 text-[10px] text-muted">{cv.pipeline.pipelineVersion} · {cv.pipeline.aiCallCount} AI calls{cv.pipeline.model ? ` · ${cv.pipeline.model}` : ""}</p>
+    {open && <>
+      <div className="mt-3 grid grid-cols-2 gap-2">
+        {dimensions.map(([key, label]) => {
+          const score = cv.evaluation?.scores[key];
+          return <div key={key} className="rounded-lg border border-line px-2 py-1.5">
+            <p className="text-[10px] font-semibold uppercase tracking-wide text-muted">{label}</p>
+            <p className={`text-sm font-bold ${(score ?? 0) >= 80 ? "text-emerald" : "text-amber-600"}`}>{score == null ? "Pending" : `${score}%`}</p>
+          </div>;
+        })}
+      </div>
+      {findings.length > 0 && <div className="mt-3 space-y-2">
+        {findings.slice(0, 6).map((finding) => <div key={finding.id} className={`rounded-lg border p-2 text-xs ${finding.status === "fail" ? "border-red-200 bg-red-50 text-red-800" : "border-amber-200 bg-amber-50 text-amber-900"}`}>
+          <p className="font-semibold">{finding.label}</p><p className="mt-0.5">{finding.detail}</p>
+        </div>)}
+        {!ready && <button className="btn-secondary w-full text-xs" onClick={() => { location.hash = "#resume"; }}>Add missing evidence to base CV</button>}
+      </div>}
+      <p className="mt-3 text-[10px] text-muted">{cv.pipeline.pipelineVersion} · {cv.pipeline.aiCallCount} AI calls{cv.pipeline.model ? ` · ${cv.pipeline.model}` : ""}</p>
+    </>}
   </div>;
 }
 
@@ -692,6 +707,87 @@ function downloadBlob(blob: Blob, fileName: string) {
   setTimeout(() => URL.revokeObjectURL(url), 3000);
 }
 
+// Sticky editor toolbar: Edit/Preview toggle, live page-count badge, style menu
+// and download menu. Replaces the scattered sidebar style + download cards.
+function EditorToolbar({ mode, onMode, pages, style, onStyle, onExport, busy }: {
+  mode: "edit" | "preview";
+  onMode: (mode: "edit" | "preview") => void;
+  pages: number;
+  style?: CvStyle;
+  onStyle: (style: CvStyle) => void;
+  onExport: (format: "pdf" | "docx") => void;
+  busy?: boolean;
+}) {
+  return (
+    <div className="editor-toolbar">
+      <div className="seg" role="tablist" aria-label="Editor mode">
+        <button type="button" role="tab" aria-selected={mode === "edit"} className={mode === "edit" ? "is-on" : ""} onClick={() => onMode("edit")}>
+          <PenLine size={14} /> Edit
+        </button>
+        <button type="button" role="tab" aria-selected={mode === "preview"} className={mode === "preview" ? "is-on" : ""} onClick={() => onMode("preview")}>
+          <Eye size={14} /> Preview
+        </button>
+      </div>
+      <span className={`page-badge ${pages <= 1 ? "is-ok" : "is-warn"}`} title="Estimated pages in the exported file">
+        {pages <= 1 ? <><Check size={13} /> Fits on 1 page</> : <><Files size={13} /> {pages} pages</>}
+      </span>
+      <div className="ml-auto flex items-center gap-2">
+        <StyleMenu value={style} onChange={onStyle} />
+        <DownloadMenu onExport={onExport} busy={busy} />
+      </div>
+    </div>
+  );
+}
+
+// Lightweight popover closed by an invisible full-screen backdrop — reliable in
+// the extension without wiring document-level click-outside listeners.
+function StyleMenu({ value, onChange }: { value?: CvStyle; onChange: (style: CvStyle) => void }) {
+  const [open, setOpen] = useState(false);
+  const preset = cvStyleSchema.parse(value ?? {}).preset;
+  const current = STYLE_PRESETS.find((p) => p.id === preset) ?? STYLE_PRESETS[0]!;
+  return (
+    <div className="menu">
+      <button type="button" className="toolbar-btn" onClick={() => setOpen((o) => !o)} aria-haspopup="menu" aria-expanded={open}>
+        <Palette size={15} /> {current.label} <ChevronDown size={14} className="text-muted" />
+      </button>
+      {open && <>
+        <button type="button" className="menu-backdrop" aria-hidden onClick={() => setOpen(false)} tabIndex={-1} />
+        <div className="menu-pop" role="menu">
+          {STYLE_PRESETS.map((p) => (
+            <button key={p.id} type="button" role="menuitemradio" aria-checked={p.id === preset}
+              className={`menu-item ${p.id === preset ? "is-on" : ""}`} onClick={() => { onChange({ preset: p.id }); setOpen(false); }}>
+              <span className="style-swatch" style={resumeStyleVars({ preset: p.id }) as React.CSSProperties}>Aa</span>
+              <span className="min-w-0 flex-1">
+                <span className="block text-sm font-semibold text-ink">{p.label}</span>
+                <span className="block text-xs text-muted">{p.hint}</span>
+              </span>
+              {p.id === preset && <Check size={15} className="shrink-0 text-emerald" />}
+            </button>
+          ))}
+        </div>
+      </>}
+    </div>
+  );
+}
+
+function DownloadMenu({ onExport, busy }: { onExport: (format: "pdf" | "docx") => void; busy?: boolean }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="menu">
+      <button type="button" className="toolbar-btn is-primary" disabled={!!busy} onClick={() => setOpen((o) => !o)} aria-haspopup="menu" aria-expanded={open}>
+        <Download size={15} /> Download <ChevronDown size={14} />
+      </button>
+      {open && <>
+        <button type="button" className="menu-backdrop" aria-hidden onClick={() => setOpen(false)} tabIndex={-1} />
+        <div className="menu-pop is-right" role="menu">
+          <button type="button" role="menuitem" className="menu-item" onClick={() => { onExport("pdf"); setOpen(false); }}><FileText size={15} className="text-emerald" /> PDF</button>
+          <button type="button" role="menuitem" className="menu-item" onClick={() => { onExport("docx"); setOpen(false); }}><FileText size={15} className="text-emerald" /> DOCX</button>
+        </div>
+      </>}
+    </div>
+  );
+}
+
 const STYLE_PRESETS: Array<{ id: CvStyle["preset"]; label: string; hint: string }> = [
   { id: "modern", label: "Modern", hint: "Sans-serif · emerald accent" },
   { id: "garamond", label: "Garamond", hint: "Serif · monochrome" },
@@ -728,6 +824,8 @@ function Editor({ state, cvId, onChange }: { state: StorageState; cvId: string; 
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const [nudgeDismissed, setNudgeDismissed] = useState(false);
+  const [mode, setMode] = useState<"edit" | "preview">("edit");
+  const [pages, setPages] = useState(1);
   const { saveState, markEdited } = useSaveStatus();
   useEffect(() => { if (!cv) return; const timer = setTimeout(async () => {
     const next = await updateState((s) => ({ ...s, drafts: { ...s.drafts, [cv.id]: { ...cv, updatedAt: new Date().toISOString() } }, applications: s.applications.map((a) => a.tailoredCv.id === cv.id ? { ...a, tailoredCv: cv, updatedAt: new Date().toISOString() } : a) }));
@@ -772,31 +870,37 @@ function Editor({ state, cvId, onChange }: { state: StorageState; cvId: string; 
         {busy && <div className="card"><Loading label={busy} /></div>}
         {!cv.evaluation && !!cv.unsupportedClaims.length && <div className="rounded-2xl border border-amber-300 bg-amber-50 p-4"><div className="flex gap-2 font-semibold text-amber-900"><AlertTriangle size={18} /> Review possible unsupported claims</div>{cv.unsupportedClaims.map((claim) => <p className="mt-2 text-sm text-amber-900" key={claim.text}><strong>{claim.section}:</strong> {claim.text} — {claim.reason}</p>)}</div>}
         <FirstEditHint state={state} onChange={onChange} />
-        <div className="tailored-resume-canvas rounded-2xl bg-soft p-3 ring-1 ring-line sm:p-6"><CvDocument cv={cv} editable lockExperienceFacts onChange={(next) => {
-          let updated = next as TailoredCv;
-          if (updated.summary !== currentCv.summary) updated = markTailoredTextStale(updated, "summary");
-          if (JSON.stringify(updated.skills) !== JSON.stringify(currentCv.skills) || JSON.stringify(updated.skillCategories) !== JSON.stringify(currentCv.skillCategories)) {
-            updated = markTailoredTextStale(updated, "skills");
-          }
-          for (const experience of updated.experiences) {
-            const previous = currentCv.experiences.find((item) => item.id === experience.id);
-            if (previous && (
-              experience.role !== previous.role ||
-              experience.company !== previous.company ||
-              experience.startDate !== previous.startDate ||
-              experience.endDate !== previous.endDate ||
-              JSON.stringify(experience.bullets) !== JSON.stringify(previous.bullets)
-            )) {
-              updated = markTailoredTextStale(updated, "experience", experience.id);
+        <EditorToolbar mode={mode} onMode={setMode} pages={pages} style={currentCv.style}
+          onStyle={(style) => { setCv({ ...currentCv, style }); markEdited.editing(); }} onExport={exportCv} busy={!!busy} />
+        <div className={`tailored-resume-canvas rounded-2xl p-3 sm:p-6 ${mode === "preview" ? "is-preview bg-soft" : "bg-soft ring-1 ring-line"}`}>
+          {mode === "edit" && <CvDocument cv={cv} editable lockExperienceFacts onChange={(next) => {
+            let updated = next as TailoredCv;
+            if (updated.summary !== currentCv.summary) updated = markTailoredTextStale(updated, "summary");
+            if (JSON.stringify(updated.skills) !== JSON.stringify(currentCv.skills) || JSON.stringify(updated.skillCategories) !== JSON.stringify(currentCv.skillCategories)) {
+              updated = markTailoredTextStale(updated, "skills");
             }
-          }
-          setCv(updated); markEdited.editing();
-        }} onCommitHeadline={(v) => { setCv({ ...currentCv, job: { ...currentCv.job, title: v }, readiness: "blocked" }); markEdited.editing(); }} onRegenerate={regenerate} busy={!!busy} /></div>
+            for (const experience of updated.experiences) {
+              const previous = currentCv.experiences.find((item) => item.id === experience.id);
+              if (previous && (
+                experience.role !== previous.role ||
+                experience.company !== previous.company ||
+                experience.startDate !== previous.startDate ||
+                experience.endDate !== previous.endDate ||
+                JSON.stringify(experience.bullets) !== JSON.stringify(previous.bullets)
+              )) {
+                updated = markTailoredTextStale(updated, "experience", experience.id);
+              }
+            }
+            setCv(updated); markEdited.editing();
+          }} onCommitHeadline={(v) => { setCv({ ...currentCv, job: { ...currentCv.job, title: v }, readiness: "blocked" }); markEdited.editing(); }} onRegenerate={regenerate} busy={!!busy} />}
+          {/* Always mounted: drives the live page badge in edit mode and the A4
+              sheets in preview mode from one faithful read-only measurement. */}
+          <PaginatedPreview cv={currentCv} headline={currentCv.job?.title} showSheets={mode === "preview"} onPageCount={setPages} />
+        </div>
       </div>
       <aside className="space-y-4 lg:sticky lg:top-24 lg:self-start">
-        <InlineEditHint saveState={saveState}>Click any line in the resume to rewrite it. Hover a section heading to <span className="font-semibold text-emerald">Regenerate</span> or reorder with the ▲▼ arrows.</InlineEditHint>
+        {mode === "edit" && <InlineEditHint saveState={saveState}>Click any line in the resume to rewrite it. Hover a section heading to <span className="font-semibold text-emerald">Regenerate</span> or reorder with the ▲▼ arrows. Switch to <span className="font-semibold text-emerald">Preview</span> to see exact pages.</InlineEditHint>}
         <QualitySignals cv={currentCv} />
-        <StylePanel value={currentCv.style} onChange={(style) => { setCv({ ...currentCv, style }); markEdited.editing(); }} />
         {showEducationNudge && (
           <div className="rounded-2xl border border-emerald bg-mint/40 p-4">
             <p className="text-sm font-semibold text-deep">Lead with Education?</p>
@@ -807,7 +911,7 @@ function Editor({ state, cvId, onChange }: { state: StorageState; cvId: string; 
             </div>
           </div>
         )}
-        <div className="card"><p className="text-sm font-semibold">Download</p><p className="mt-1 text-xs text-muted">The exact exported file will receive one final format check.</p><div className="mt-4 flex gap-2"><button className="btn-primary flex-1" onClick={() => exportCv("pdf")}><Download size={16} /> PDF</button><button className="btn-secondary flex-1" onClick={() => exportCv("docx")}><Download size={16} /> DOCX</button></div></div>
+        <p className="px-1 text-[11px] text-muted">Downloads (top right) receive one final format check before export.</p>
         <button className="btn-secondary w-full" onClick={() => { location.hash = "#applications"; }}><ArrowLeft size={16} /> Back to applications</button>
       </aside>
     </div>

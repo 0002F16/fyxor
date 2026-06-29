@@ -105,7 +105,7 @@ function contactItems(contact: ResumeDocument["contact"]) {
   ].filter(Boolean) as Array<{ icon: typeof MapPin; value: string }>;
 }
 
-function Section({ title, children, onRegenerate, onRemove, onMoveUp, onMoveDown, busy }: {
+function Section({ title, children, onRegenerate, onRemove, onMoveUp, onMoveDown, busy, contentBlock }: {
   title: string;
   children: React.ReactNode;
   onRegenerate?: () => void;
@@ -113,11 +113,16 @@ function Section({ title, children, onRegenerate, onRemove, onMoveUp, onMoveDown
   onMoveUp?: () => void;
   onMoveDown?: () => void;
   busy?: boolean;
+  // When the section's whole content is one short, unbreakable unit (summary,
+  // languages, certifications) mark the content wrapper as a single pagination
+  // block. Sections with their own per-entry blocks (experience, skills,
+  // education) leave this off and mark the entries instead.
+  contentBlock?: boolean;
 }) {
   return (
     <section className="group/sec mt-3 first:mt-0">
       <div className="flex items-center justify-between border-b border-line pb-1">
-        <h2 className="font-display text-[11px] font-bold uppercase tracking-[.14em] text-deep">{title}</h2>
+        <h2 data-cvblock="heading" className="font-display text-[11px] font-bold uppercase tracking-[.14em] text-deep">{title}</h2>
         <span className="inline-flex items-center gap-1">
           {(onMoveUp || onMoveDown) && (
             <span className="cv-control inline-flex items-center">
@@ -145,7 +150,7 @@ function Section({ title, children, onRegenerate, onRemove, onMoveUp, onMoveDown
           )}
         </span>
       </div>
-      <div className="mt-1.5 text-[12.5px] leading-snug text-ink">{children}</div>
+      <div data-cvblock={contentBlock ? "block" : undefined} className="mt-1.5 text-[12.5px] leading-snug text-ink">{children}</div>
     </section>
   );
 }
@@ -314,7 +319,7 @@ export function CvDocument({ cv, headline: headlineProp, editable = false, lockE
 
   const sections: Record<SectionId, ReactNode> = {
     summary: (editable || cv.summary.trim()) ? (
-      <Section title="Profile" onRegenerate={onRegenerate && (() => onRegenerate("summary"))} busy={busy} {...moveProps("summary")}>
+      <Section title="Profile" contentBlock onRegenerate={onRegenerate && (() => onRegenerate("summary"))} busy={busy} {...moveProps("summary")}>
         <Text editable={editable} value={cv.summary} onCommit={(value) => update({ summary: value })} tag="p" placeholder="Write a short professional summary…" />
       </Section>
     ) : null,
@@ -323,7 +328,7 @@ export function CvDocument({ cv, headline: headlineProp, editable = false, lockE
       <Section title="Experience" {...moveProps("experience")}>
         <div className="space-y-2.5">
           {cv.experiences.map((experience) => (
-            <div className="group/sec relative break-inside-avoid" key={experience.id}>
+            <div data-cvblock="block" className="group/sec relative break-inside-avoid" key={experience.id}>
               <div className="flex items-baseline justify-between gap-3">
                 <div>
                   <Text editable={editable} value={experience.role} onCommit={(value) => setExperience(experience.id, { role: value })}
@@ -393,7 +398,7 @@ export function CvDocument({ cv, headline: headlineProp, editable = false, lockE
               writeCategories(next);
             };
             return (
-              <p className="group/row relative flex flex-wrap items-baseline gap-x-1" key={index}>
+              <p data-cvblock="block" className="group/row relative flex flex-wrap items-baseline gap-x-1" key={index}>
                 <span className="font-semibold text-ink">
                   <Text editable={editable} value={name} onCommit={renameCategory} className="font-semibold text-ink" placeholder="Category" />
                   <span>:</span>
@@ -428,7 +433,7 @@ export function CvDocument({ cv, headline: headlineProp, editable = false, lockE
     ) : null,
 
     certifications: certifications.length > 0 ? (
-      <Section title="Certifications" onRemove={editable ? () => update({ certifications: [] }) : undefined} {...moveProps("certifications")}>
+      <Section title="Certifications" contentBlock onRemove={editable ? () => update({ certifications: [] }) : undefined} {...moveProps("certifications")}>
         <EditList items={certifications} editable={editable} onChange={(next) => update({ certifications: next.map((item) => typeof item === "string" ? item : item.text) })} addLabel="Add certification" placeholder="Certification" />
       </Section>
     ) : editable ? (
@@ -439,7 +444,7 @@ export function CvDocument({ cv, headline: headlineProp, editable = false, lockE
     ) : null,
 
     languages: languages.length > 0 ? (
-      <Section title="Languages" {...moveProps("languages")}>
+      <Section title="Languages" contentBlock {...moveProps("languages")}>
         {editable ? (
           <div className="flex flex-wrap gap-x-3 gap-y-1">
             {cv.languages.map((language, index) => (
@@ -462,7 +467,7 @@ export function CvDocument({ cv, headline: headlineProp, editable = false, lockE
       <Section title="Education" {...moveProps("education")}>
         <div className="space-y-2.5">
           {education.map((entry) => editable ? (
-            <div className="group/sec relative break-inside-avoid" key={entry.id}>
+            <div data-cvblock="block" className="group/sec relative break-inside-avoid" key={entry.id}>
               <div className="flex items-baseline justify-between gap-3">
                 <Text editable value={entry.school} onCommit={(value) => setEducation(entry.id, { school: value })}
                   tag="p" className="font-semibold text-ink" placeholder="School" />
@@ -490,7 +495,7 @@ export function CvDocument({ cv, headline: headlineProp, editable = false, lockE
             </div>
           ) : (() => {
             const fmt = formatEducationEntry(entry);
-            return <div className="break-inside-avoid" key={entry.id}>
+            return <div data-cvblock="block" className="break-inside-avoid" key={entry.id}>
               {(fmt.title || fmt.meta) && <div className="flex items-baseline justify-between gap-3">
                 <p className="font-semibold text-ink">{fmt.title}</p>
                 {fmt.meta && <span className="shrink-0 text-[11px] font-medium text-muted">{fmt.meta}</span>}
@@ -519,7 +524,7 @@ export function CvDocument({ cv, headline: headlineProp, editable = false, lockE
           <span className="cv-page-guide-label">Page {index + 2}</span>
         </div>
       ))}
-      <header className="group/sec relative border-b-2 border-deep pb-2.5 text-center">
+      <header data-cvblock="block" className="group/sec relative border-b-2 border-deep pb-2.5 text-center">
         <Text editable={editable} value={cv.contact.name} onCommit={(value) => setContact("name", value)} placeholder="Your Name"
           tag="h1" className="font-display text-[26px] font-bold leading-tight tracking-tight" />
         {(editable && onCommitHeadline) ? (

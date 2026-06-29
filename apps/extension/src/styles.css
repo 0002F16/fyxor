@@ -86,3 +86,49 @@ textarea { resize: vertical; }
 /* A4 page-break guides overlaid on the editing canvas */
 .cv-page-guide { position: absolute; left: 0; right: 0; border-top: 1px dashed #cbd5e1; pointer-events: none; z-index: 1; }
 .cv-page-guide-label { position: absolute; right: 0; top: 2px; padding: 1px 6px; border-radius: 4px; background: #f1f5f9; color: #94a3b8; font-size: 9px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }
+
+/* ---- Editor toolbar (Edit/Preview · page badge · style · download) ---- */
+.editor-toolbar { @apply sticky top-16 z-20 flex flex-wrap items-center gap-2 rounded-2xl border border-line bg-white/95 p-2 shadow-soft backdrop-blur; }
+.seg { @apply inline-flex rounded-lg bg-soft p-0.5; }
+.seg button { @apply inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-semibold text-muted transition; }
+.seg button.is-on { @apply bg-white text-deep shadow-soft; }
+.page-badge { @apply inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-semibold; }
+.page-badge.is-ok { @apply bg-mint text-deep; }
+.page-badge.is-warn { @apply bg-amber-100 text-amber-700; }
+
+/* Toolbar buttons + lightweight popover menus (style / download) */
+.toolbar-btn { @apply inline-flex items-center gap-1.5 rounded-lg border border-line bg-white px-3 py-1.5 text-sm font-semibold text-ink transition hover:border-emerald/60 disabled:cursor-not-allowed disabled:opacity-50; }
+.toolbar-btn.is-primary { @apply border-transparent bg-deep text-white hover:bg-emerald; }
+.menu { @apply relative; }
+.menu-backdrop { @apply fixed inset-0 z-30 cursor-default; background: transparent; }
+.menu-pop { @apply absolute right-0 z-40 mt-1.5 w-60 rounded-xl border border-line bg-white p-1 shadow-lg; top: 100%; }
+.menu-pop.is-right { @apply w-44; }
+.menu-item { @apply flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-sm font-medium text-ink transition hover:bg-soft; }
+.menu-item.is-on { @apply bg-mint/50; }
+.style-swatch { @apply flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-line text-base font-bold; font-family: var(--cv-font-display); color: rgb(var(--cv-accent-rgb)); background: rgb(var(--cv-highlight-rgb)); }
+
+/* Quality-review overall score bar */
+.quality-bar { @apply h-1.5 w-full overflow-hidden rounded-full bg-soft; }
+.quality-bar-fill { @apply h-full rounded-full transition-all; }
+.quality-bar-fill.is-ok { background: rgb(var(--cv-accent-rgb, 5 150 105)); }
+.quality-bar-fill.is-warn { @apply bg-amber-400; }
+
+/* ---- True-to-PDF A4 preview sheets ---- */
+/* Hidden measurement copy, sized to the print content width (794 − 2×48). */
+.cv-measure { position: fixed; left: -10000px; top: 0; width: 698px; visibility: hidden; pointer-events: none; }
+.cv-sheets { @apply flex flex-col items-stretch gap-6 py-1; }
+.cv-sheet-frame { @apply flex justify-center overflow-visible; }
+.cv-sheet { position: relative; width: 794px; height: 1123px; background: #fff; border-radius: 6px; box-shadow: 0 1px 3px rgba(15, 23, 42, .12), 0 14px 36px -14px rgba(15, 23, 42, .28); overflow: hidden; }
+.cv-sheet-window { position: absolute; top: 48px; left: 48px; width: 698px; height: 1027px; overflow: hidden; }
+.cv-sheet-label { position: absolute; right: 14px; bottom: 10px; font-size: 10px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: #cbd5e1; }
+/* Inside the measurement + sheets the resume renders at exact print geometry:
+   no on-screen comfort padding, no card chrome. Placed after the comfort-margin
+   rule (same specificity) and forced so the window math stays exact. */
+.cv-measure .cv-document,
+.cv-sheet .cv-document {
+  width: 698px !important;
+  max-width: none !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  box-shadow: none !important;
+}
