@@ -1,9 +1,10 @@
 import OpenAI from "openai";
 import type { GenerateInput, Generator } from "./openai.js";
-import { LLM_TIMEOUT_MS, zodToJsonSchema } from "./openai.js";
+import { LLM_TIMEOUT_MS, normalizeStructuredOutput, zodToJsonSchema } from "./openai.js";
 
 // Gemini's OpenAI-compatible endpoint uses Chat Completions (not Responses API).
 export class GeminiGenerator implements Generator {
+  lastUsage?: { inputTokens?: number; outputTokens?: number };
   private client: OpenAI;
   private model: string;
 
@@ -34,6 +35,10 @@ export class GeminiGenerator implements Generator {
     }, { timeout: LLM_TIMEOUT_MS });
     const text = response.choices[0]?.message?.content;
     if (!text) throw new Error("Gemini returned empty response");
-    return schema.parse(JSON.parse(text));
+    this.lastUsage = {
+      inputTokens: response.usage?.prompt_tokens,
+      outputTokens: response.usage?.completion_tokens
+    };
+    return schema.parse(normalizeStructuredOutput(name, JSON.parse(text)));
   }
 }

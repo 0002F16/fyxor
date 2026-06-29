@@ -1,4 +1,10 @@
-import type { BaseProfile, JobDescription, TailoredCv } from "@cv-tailor/shared";
+import {
+  bulletText,
+  type BaseProfile,
+  type JobDescription,
+  type SummaryEvidenceReference,
+  type TailoredCv
+} from "@cv-tailor/shared";
 
 export type EvalDimension = "truthfulness" | "relevance" | "readability" | "ats" | "appropriateness";
 export type EvalStatus = "pass" | "warn" | "fail";
@@ -83,6 +89,45 @@ function supportedJobSkills(profile: BaseProfile, job: JobDescription): string[]
   return candidates.filter((skill) => jd.includes(normalized(skill)));
 }
 
+function authorizationText(profile: BaseProfile): string {
+  return `${profile.summary}\n${profile.rawText}`
+    .split(/\n|(?<=[.!?])\s+/)
+    .map((part) => part.trim())
+    .find((part) =>
+      /\b(work authori[sz]ation|authori[sz]ed to work|right to work|without sponsorship|no sponsorship|visa|residence permit)\b/i.test(part)
+    ) || "";
+}
+
+function summaryEvidenceValid(reference: SummaryEvidenceReference, profile: BaseProfile): boolean {
+  const kind = reference.kind || "experience";
+  if (kind === "experience") {
+    const source = profile.experiences.find((entry) => entry.id === (reference.sourceExperienceId || ""));
+    return Boolean(source && (reference.sourceBulletIndexes || []).length &&
+      (reference.sourceBulletIndexes || []).every((index) => index >= 0 && index < source.bullets.length));
+  }
+  if (kind === "language") {
+    return profile.languages.some((entry) =>
+      normalized(entry.language) === normalized(reference.language || "") &&
+      (!reference.level || normalized(entry.level) === normalized(reference.level))
+    );
+  }
+  if (kind === "skill") return skillSupported(reference.skill || "", profile);
+  if (kind === "certification") {
+    return profile.certifications.some((entry) => normalized(entry) === normalized(reference.certification || ""));
+  }
+  if (kind === "education") return profile.education.some((entry) => entry.id === (reference.educationId || ""));
+  if (kind === "employment") {
+    return profile.experiences.some((entry) => entry.id === (reference.sourceExperienceId || ""));
+  }
+  if (kind === "project") return (profile.projects || []).some((entry) => entry.id === (reference.projectId || ""));
+  if (kind === "authorization") return Boolean(authorizationText(profile));
+  if (kind === "inference") {
+    return (reference.confidence || "high") === "high" &&
+      Boolean((reference.value || "").trim() && (reference.basis || "").trim());
+  }
+  return false;
+}
+
 function check(
   id: string,
   dimension: EvalDimension,
@@ -99,7 +144,7 @@ export function evaluateTailoredCv(profile: BaseProfile, job: JobDescription, cv
   const sourceById = new Map(profile.experiences.map((experience) => [experience.id, experience]));
   const outputText = [
     cv.summary,
-    ...cv.experiences.flatMap((experience) => [experience.role, experience.company, ...experience.bullets]),
+    ...cv.experiences.flatMap((experience) => [experience.role, experience.company, ...experience.bullets.map(bulletText)]),
     ...cv.skills
   ].join("\n");
   const sourceText = JSON.stringify(profile);
@@ -116,8 +161,11 @@ export function evaluateTailoredCv(profile: BaseProfile, job: JobDescription, cv
 
   const badCitations = cv.experiences.filter((experience) => {
     const source = sourceById.get(experience.sourceExperienceId);
-    return !source || !experience.sourceBulletIndexes.length ||
-      experience.sourceBulletIndexes.some((index) => index < 0 || index >= source.bullets.length);
+    return !source || experience.bullets.some((bullet) =>
+      !bullet.sourceBulletIndexes.length ||
+      bullet.sourceBulletIndexes.some((index) => index < 0 || index >= source.bullets.length) ||
+      bullet.evidenceStatus !== "verified"
+    );
   });
   checks.push(check(
     "bullet-citations",
@@ -158,13 +206,205 @@ export function evaluateTailoredCv(profile: BaseProfile, job: JobDescription, cv
     3
   ));
 
-  const unsupportedSkills = cv.skills.filter((skill) => !skillSupported(skill, profile));
+  const skillEvidenceByName = new Map(cv.skillEvidence.map((skill) => [normalized(skill.skill), skill]));
+  const unsupportedSkills = cv.skills.filter((skill) => {
+    const evidence = skillEvidenceByName.get(normalized(skill));
+    return evidence?.provenance !== "inferred-baseline" && !skillSupported(skill, profile);
+  });
   checks.push(check(
     "skill-evidence",
     "truthfulness",
     unsupportedSkills.length ? "warn" : "pass",
     "Skills are evidenced by the base profile",
     unsupportedSkills.length ? `Review unsupported or heavily reframed skills: ${unsupportedSkills.join(", ")}.` : "Every output skill has detectable source evidence.",
+    2
+  ));
+
+  const staleSummaryClaims = cv.summaryClaims.filter((claim) =>
+    !["verified", "needs-review"].includes(claim.evidenceStatus) ||
+    !claim.evidence.length ||
+    claim.evidence.some((reference) => !summaryEvidenceValid(reference, profile))
+  );
+  const missingSummaryEvidence = Boolean(cv.summary.trim()) && cv.summaryClaims.length === 0;
+  checks.push(check(
+    "summary-evidence",
+    "truthfulness",
+    staleSummaryClaims.length || missingSummaryEvidence ? "fail" : "pass",
+    "Summary claims retain verified evidence",
+    missingSummaryEvidence
+      ? "The summary has no claim-level evidence."
+      : staleSummaryClaims.length
+        ? `${staleSummaryClaims.length} summary claim(s) are stale or unsupported.`
+        : "Summary claims are linked to verified source evidence.",
+    3
+  ));
+
+  const claimsMissingFromSummary = cv.summaryClaims.filter((claim) =>
+    !normalized(cv.summary).includes(normalized(claim.text))
+  );
+  checks.push(check(
+    "summary-claim-text",
+    "truthfulness",
+    claimsMissingFromSummary.length ? "fail" : "pass",
+    "Summary claims appear in the actual prose",
+    claimsMissingFromSummary.length
+      ? `Claim text missing from the summary: ${claimsMissingFromSummary.map((claim) => claim.id).join(", ")}.`
+      : "Every structured summary claim is represented in the summary text.",
+    3
+  ));
+
+  const mandatorySummaryClaims = cv.evidencePlan?.summaryClaims.filter((claim) => claim.mandatory) || [];
+  const omittedMandatorySummaryClaims = mandatorySummaryClaims.filter((claim) =>
+    !cv.summaryClaims.some((output) => output.id === claim.id)
+  );
+  checks.push(check(
+    "summary-decisive-evidence",
+    "relevance",
+    omittedMandatorySummaryClaims.length ? "fail" : "pass",
+    "Decisive matched requirements appear in the summary",
+    omittedMandatorySummaryClaims.length
+      ? `Mandatory summary claims omitted: ${omittedMandatorySummaryClaims.map((claim) => claim.id).join(", ")}.`
+      : "All decisive matched requirements planned for the summary are present.",
+    3
+  ));
+
+  const inferredSummaryClaims = cv.summaryClaims.filter((claim) =>
+    claim.provenance === "inferred-context" ||
+    claim.evidenceStatus === "needs-review" ||
+    claim.evidence.some((reference) => reference.kind === "inference")
+  );
+  checks.push(check(
+    "summary-inference-review",
+    "truthfulness",
+    inferredSummaryClaims.length ? "warn" : "pass",
+    "Inferred summary context is identified",
+    inferredSummaryClaims.length
+      ? `Review inferred summary context before applying: ${inferredSummaryClaims.map((claim) => claim.text).join("; ")}.`
+      : "The summary contains no inferred context.",
+    1
+  ));
+
+  const reusedBaseSummary = normalized(cv.summary) === normalized(profile.summary);
+  const blueprint = cv.evidencePlan?.summaryBlueprint;
+  const shouldDiffer = Boolean(blueprint &&
+    ((blueprint.decisiveRequirementIds || []).length ||
+      ["transition", "adjacent-identity", "education-led", "executive"].includes(blueprint.positioningMode || "")) &&
+    !normalized(profile.summary).includes(normalized(job.title)));
+  checks.push(check(
+    "summary-tailoring-specificity",
+    "relevance",
+    reusedBaseSummary && shouldDiffer ? "fail" : "pass",
+    "Summary reflects the target role when useful",
+    reusedBaseSummary && shouldDiffer
+      ? "The base summary was reused despite a job-specific positioning blueprint."
+      : reusedBaseSummary
+        ? "The existing summary already satisfies the target blueprint."
+        : "The summary is materially tailored to the target blueprint.",
+    3
+  ));
+
+  const staleSkillEvidence = cv.skills.filter((skill) => {
+    const evidence = skillEvidenceByName.get(normalized(skill));
+    return !evidence || !["verified", "needs-review"].includes(evidence.evidenceStatus) ||
+      evidence.evidence.some((reference) => {
+        const source = sourceById.get(reference.sourceExperienceId);
+        return !source || reference.sourceBulletIndexes.some((index) => index < 0 || index >= source.bullets.length);
+      });
+  });
+  checks.push(check(
+    "skill-provenance",
+    "truthfulness",
+    staleSkillEvidence.length ? "fail" : "pass",
+    "Skill evidence is current",
+    staleSkillEvidence.length ? `Stale, missing, or unsupported skill evidence: ${staleSkillEvidence.join(", ")}.` : "Skill evidence is current.",
+    2
+  ));
+
+  const inferredSkills = cv.skillEvidence.filter((skill) =>
+    skill.provenance === "inferred-baseline" || skill.evidenceStatus === "needs-review"
+  );
+  checks.push(check(
+    "inferred-skill-review",
+    "truthfulness",
+    inferredSkills.length ? "warn" : "pass",
+    "Inferred baseline skills are identified",
+    inferredSkills.length
+      ? `Review inferred baseline skills before applying: ${inferredSkills.map((skill) => skill.skill).join(", ")}.`
+      : "No inferred baseline skills were added.",
+    1
+  ));
+
+  const unsupportedCertifications = cv.certifications.filter((certification) =>
+    !profile.certifications.some((source) => normalized(source) === normalized(certification))
+  );
+  checks.push(check(
+    "certification-evidence",
+    "truthfulness",
+    unsupportedCertifications.length ? "fail" : "pass",
+    "Certifications come from the base profile",
+    unsupportedCertifications.length ? `Unsupported certifications: ${unsupportedCertifications.join(", ")}.` : "All certifications are source-backed.",
+    3
+  ));
+
+  const plannedRequirements = cv.evidencePlan?.requirements.filter((requirement) =>
+    ["must", "important"].includes(requirement.priority) &&
+    ["explicit", "supported-equivalent", "inferred-baseline"].includes(requirement.coverage)
+  ) || [];
+  const omittedRequirements = plannedRequirements.filter((requirement) => {
+    const mappedSkills = [
+      ...requirement.sourceSkills,
+      ...cv.skillEvidence.filter((skill) => skill.requirementIds.includes(requirement.id)).map((skill) => skill.skill)
+    ];
+    const appearsAsSkill = mappedSkills.some((skill) => cv.skills.some((outputSkill) =>
+      normalized(outputSkill) === normalized(skill)
+    ));
+    const appearsInText = requirement.evidence.some((reference) => {
+      const role = cv.experiences.find((experience) => experience.sourceExperienceId === reference.sourceExperienceId);
+      return role?.bullets.some((bullet) =>
+        bullet.sourceBulletIndexes.some((index) => reference.sourceBulletIndexes.includes(index))
+      );
+    });
+    return !appearsAsSkill && !appearsInText && !normalized(cv.summary).includes(normalized(requirement.text));
+  });
+  checks.push(check(
+    "requirement-coverage",
+    "relevance",
+    omittedRequirements.length ? "warn" : "pass",
+    "Supported priority requirements are represented",
+    omittedRequirements.length
+      ? `Supported requirements omitted from the resume: ${omittedRequirements.map((requirement) => requirement.text).join("; ")}.`
+      : "All supported must-have and important requirements are represented.",
+    3
+  ));
+
+  const sourceSkillCount = new Set([
+    ...profile.skills,
+    ...Object.values(profile.skillCategories).flat()
+  ].map(normalized)).size;
+  const excessivePruning = sourceSkillCount >= 8 && cv.skills.length < 8;
+  checks.push(check(
+    "skill-retention-floor",
+    "relevance",
+    excessivePruning ? "warn" : "pass",
+    "The skills section preserves meaningful source coverage",
+    excessivePruning
+      ? `Only ${cv.skills.length} of ${sourceSkillCount} source skills remain; retain at least eight when relevant evidence exists.`
+      : `${cv.skills.length} skills are retained from the available source evidence and approved baseline keywords.`,
+    2
+  ));
+
+  const sourceBulletCount = profile.experiences.reduce((sum, experience) => sum + experience.bullets.length, 0);
+  const outputBulletCount = cv.experiences.reduce((sum, experience) => sum + experience.bullets.length, 0);
+  const underfilledOnePage = cv.evidencePlan?.pageTarget === "one" &&
+    ((sourceBulletCount >= 4 && outputBulletCount < 4) || (sourceSkillCount >= 8 && cv.skills.length < 8));
+  checks.push(check(
+    "underfilled-resume",
+    "relevance",
+    underfilledOnePage ? "warn" : "pass",
+    "Available page space is used for relevant evidence",
+    underfilledOnePage
+      ? "The one-page resume is underfilled while additional source-backed bullets or skills are available."
+      : "The resume uses its planned page budget without obvious evidence underfill.",
     2
   ));
 
@@ -198,7 +438,7 @@ export function evaluateTailoredCv(profile: BaseProfile, job: JobDescription, cv
   ));
 
   const longBullets = cv.experiences.flatMap((experience) =>
-    experience.bullets.filter((bullet) => words(bullet).length > 32).map((bullet) => `${experience.role}: ${words(bullet).length} words`)
+    experience.bullets.filter((bullet) => words(bulletText(bullet)).length > 32).map((bullet) => `${experience.role}: ${words(bulletText(bullet)).length} words`)
   );
   checks.push(check(
     "bullet-length",
@@ -210,7 +450,7 @@ export function evaluateTailoredCv(profile: BaseProfile, job: JobDescription, cv
   ));
 
   const multiSentenceBullets = cv.experiences.flatMap((experience) =>
-    experience.bullets.filter((bullet) => sentenceCount(bullet) > 1).map(() => experience.role)
+    experience.bullets.filter((bullet) => sentenceCount(bulletText(bullet)) > 1).map(() => experience.role)
   );
   checks.push(check(
     "single-sentence-bullets",
@@ -256,14 +496,19 @@ export function evaluateTailoredCv(profile: BaseProfile, job: JobDescription, cv
   ));
 
   const incompleteRoles = cv.experiences.filter((experience) =>
-    !experience.role.trim() || !experience.company.trim() || !experience.bullets.some((bullet) => bullet.trim())
+    !experience.role.trim() || !experience.company.trim() || !experience.bullets.some((bullet) => bulletText(bullet).trim())
   );
+  const missingExperience = cv.experiences.length === 0;
   checks.push(check(
     "ats-role-structure",
     "ats",
-    incompleteRoles.length ? "fail" : "pass",
+    incompleteRoles.length || missingExperience ? "fail" : "pass",
     "Experience entries have parsable structure",
-    incompleteRoles.length ? `${incompleteRoles.length} role(s) are missing a title, company, or bullet.` : "Every role has a title, company, and at least one bullet.",
+    missingExperience
+      ? "The tailored resume has no source-backed experience entries."
+      : incompleteRoles.length
+        ? `${incompleteRoles.length} role(s) are missing a title, company, or bullet.`
+        : "Every role has a title, company, and at least one bullet.",
     2
   ));
 
@@ -282,16 +527,29 @@ export function evaluateTailoredCv(profile: BaseProfile, job: JobDescription, cv
     2
   ));
 
+  const unverifiedTitles = cv.experiences.filter((experience) => experience.titleEvidenceStatus === "needs-review");
+  checks.push(check(
+    "title-evidence",
+    "appropriateness",
+    unverifiedTitles.length ? "fail" : "pass",
+    "Reframed titles have verified evidence",
+    unverifiedTitles.length ? `${unverifiedTitles.length} title change(s) need evidence review.` : "All title decisions are verified.",
+    3
+  ));
+
   const targetTitle = normalized(job.title);
   const summaryStartsAsTitle = Boolean(targetTitle) && normalized(cv.summary).startsWith(targetTitle);
+  const targetIdentityAllowed = cv.evidencePlan?.summaryBlueprint?.targetIdentityAllowed ?? false;
   checks.push(check(
     "target-title-claim",
     "appropriateness",
-    summaryStartsAsTitle ? "warn" : "pass",
+    summaryStartsAsTitle && !targetIdentityAllowed ? "fail" : "pass",
     "Target title is framed as intent, not implied employment history",
-    summaryStartsAsTitle
-      ? "The summary opens with the exact target title; review wording so career changers do not appear to claim a role they have not held."
-      : "The summary does not automatically present the target title as an established identity.",
+    summaryStartsAsTitle && !targetIdentityAllowed
+      ? "The summary opens with the exact target title even though the evidence blueprint does not allow that identity."
+      : summaryStartsAsTitle
+        ? "The target identity is supported by the fit and evidence blueprint."
+        : "The summary uses transition-safe positioning.",
     2
   ));
 

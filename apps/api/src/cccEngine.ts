@@ -179,7 +179,6 @@ export function mapResumeToTailoredCv(resume: CccResume, profile: BaseProfile, j
     id: crypto.randomUUID(),
     baseProfileId: profile.id,
     job,
-    outputLanguage: profile.outputLanguage,
     contact: {
       name: resume.name || profile.contact.name,
       email: resume.email || profile.contact.email,
@@ -188,16 +187,26 @@ export function mapResumeToTailoredCv(resume: CccResume, profile: BaseProfile, j
       linkedIn: resume.linkedin || profile.contact.linkedIn
     },
     summary: stripHtml(resume.summary || ""),
+    summaryClaims: [],
     experiences: (resume.experience || []).map((role, index) => {
       const { startDate, endDate } = splitDateRange(role.dates || "");
+      const sourceExperienceId = findSourceExperienceId(role, index);
+      const source = profile.experiences.find((experience) => experience.id === sourceExperienceId);
       return {
         id: crypto.randomUUID(),
         company: role.company || "",
         role: role.title || "",
+        originalRole: source?.role || role.title || "",
+        titleEvidenceStatus: source && source.role !== (role.title || "") ? "needs-review" as const : "unchanged" as const,
         startDate,
         endDate,
-        bullets: (role.bullets || []).map(stripHtml).filter(Boolean),
-        sourceExperienceId: findSourceExperienceId(role, index),
+        bullets: (role.bullets || []).map(stripHtml).filter(Boolean).map((text) => ({
+          id: crypto.randomUUID(),
+          text,
+          sourceBulletIndexes: [],
+          evidenceStatus: "legacy-unverified" as const
+        })),
+        sourceExperienceId,
         sourceBulletIndexes: []
       };
     }),
@@ -212,6 +221,7 @@ export function mapResumeToTailoredCv(resume: CccResume, profile: BaseProfile, j
       coursework: entry.note ? entry.note.split(/;|\n/).map((s) => s.trim()).filter(Boolean) : []
     })),
     skills,
+    skillEvidence: [],
     skillCategories,
     certifications: resume.certifications || [],
     languages: (resume.languages && resume.languages.length
@@ -221,6 +231,8 @@ export function mapResumeToTailoredCv(resume: CccResume, profile: BaseProfile, j
     style: profile.style,
     dismissedChecks: [],
     unsupportedClaims: [],
+    pipeline: { pipelineVersion: "legacy-ccc", runId: "", provider: "", model: "", legacyEngine: "ccc", stages: [], aiCallCount: 0, repairCount: 0 },
+    readiness: "needs-source-update",
     createdAt: now,
     updatedAt: now
   };

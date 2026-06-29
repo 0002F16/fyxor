@@ -4,7 +4,7 @@ import { activeTailoringFor, selectPopupView } from "./popupView";
 
 const profile = (): BaseProfile => ({
   id: makeId("profile"), contact: { name: "", email: "", phone: "", location: "", linkedIn: "" },
-  targetRole: "", outputLanguage: "en", summary: "", experiences: [], education: [], skills: [], skillCategories: {}, certifications: [], languages: [], sectionOrder: [], style: { preset: "modern" }, dismissedChecks: [], rawText: "", updatedAt: ""
+  targetRole: "", summary: "", experiences: [], education: [], skills: [], skillCategories: {}, certifications: [], languages: [], sectionOrder: [], style: { preset: "modern" }, dismissedChecks: [], rawText: "", updatedAt: ""
 });
 
 const job = (): JobDescription => ({ title: "Engineer", company: "Acme", location: "", description: "x".repeat(40), url: "", source: "manual" });
@@ -58,7 +58,7 @@ describe("selectPopupView", () => {
 describe("activeTailoringFor", () => {
   const jobA = (): JobDescription => ({ title: "Engineer", company: "Acme", location: "", description: "x".repeat(40), url: "https://jobs/a", source: "manual" });
   const jobB = (): JobDescription => ({ title: "Designer", company: "Globex", location: "", description: "y".repeat(40), url: "https://jobs/b", source: "manual" });
-  const doneFor = (j: JobDescription): TailoringJob => ({ status: "done", error: "", cvId: "cv_1", jobKey: tailoringJobKey(j), startedAt: 0 });
+  const doneFor = (j: JobDescription): TailoringJob => ({ status: "done", error: "", cvId: "cv_1", runId: "run_1", stage: "completed", progress: 100, jobKey: tailoringJobKey(j), startedAt: 0 });
 
   it("returns null when there is no tailoring slot", () => {
     expect(activeTailoringFor(null, jobA())).toBeNull();

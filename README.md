@@ -69,7 +69,9 @@ npm run dev:extension   # Vite watch build → apps/extension/dist/
 
 | Variable | Default | Notes |
 |---|---|---|
-| `AI_PROVIDER` | `gemini-api` | `gemini-api` \| `openai-api` \| `codex-local` |
+| `AI_PROVIDER` | `groq-api` | `groq-api` \| `gemini-api` \| `openai-api` \| `codex-local` |
+| `GROQ_API_KEY` | — | Required when using Groq |
+| `GROQ_MODEL` | `meta-llama/llama-4-scout-17b-16e-instruct` | |
 | `GEMINI_API_KEY` | — | Required when using Gemini |
 | `GEMINI_MODEL` | `gemini-2.5-flash` | |
 | `OPENAI_API_KEY` | — | Required when using OpenAI |
@@ -90,8 +92,23 @@ CCC is the **default tailoring engine** — a Python subprocess that produces hi
 | `CCC_ENGINE_ROOT` | Absolute path to the CCC repo root |
 | `CCC_PYTHON` | Path to the CCC venv Python (defaults to `$CCC_ENGINE_ROOT/.venv/bin/python3`) |
 | `CCC_LLM_PROVIDER` | LLM provider override inside CCC (defaults to Gemini) |
+| `ENABLE_LEGACY_ENGINES` | Internal rollback/benchmark flag. Default `false`; users always use the unified evidence-first pipeline. |
 
 CCC auto-loads its own `$CCC_ENGINE_ROOT/.env` for its API keys.
+
+### Unified tailoring pipeline
+
+Normal tailoring runs through evidence planning, constrained writing, and an
+independent critic. A targeted repair call runs only when factual checks or the
+critic find a must-fix problem. Tailoring uses recoverable `/api/tailoring-runs`
+jobs and stores per-bullet evidence. Unified v3 sanitizes recoverable planner and
+writer mistakes locally: weak title changes revert to the official title,
+unsupported optional content is omitted, certifications are copied exactly from
+the base profile, unusable plans fall back to source evidence, and deterministic
+coverage floors preserve relevant source skills and bullets. Export is
+blocked only while factual failures remain after those recoveries.
+The legacy built-in and CCC paths are available only when
+`ENABLE_LEGACY_ENGINES=true`.
 
 ---
 
@@ -105,14 +122,20 @@ All routes under `/api/*` require a **Better Auth bearer token** except where no
 | POST | `/api/profile/parse-file` | None | Upload PDF/DOCX → raw text |
 | POST | `/api/profile/extract` | Required | Raw text → structured `BaseProfile` |
 | POST | `/api/profile/categorize-skills` | Required | Skills list → categorized skills |
-| POST | `/api/cvs/tailor` | Required | Profile + job → `TailoredCv` (CCC or built-in) |
-| POST | `/api/cvs/regenerate` | Required | Regenerate one section of a tailored CV |
+| POST | `/api/tailoring-runs` | Required | Create or reuse a recoverable unified tailoring run |
+| GET | `/api/tailoring-runs/:id` | Required | Poll real pipeline stage, progress, findings, and result |
+| DELETE | `/api/tailoring-runs/:id` | Required | Cancel a recoverable tailoring run |
+| POST | `/api/cvs/tailor` | Required | Compatibility wrapper for older extension clients |
+| POST | `/api/cvs/regenerate` | Required | Regenerate one section and return a section patch |
 | GET | `/api/data/sync` | Required | Pull user data from Postgres |
 | PUT | `/api/data/sync` | Required | Push user data to Postgres |
 | GET | `/api/data/usage` | Required | Monthly tailor count for the user |
+| POST | `/api/cvs/export` | Required | Revalidate evidence and the exact PDF/DOCX before download |
 | POST | `/api/cvs/export` | None | Render CV to DOCX or PDF |
 
 The extension can override the AI provider per-request with the `x-ai-provider` header.
+New and existing extension installs default to Groq; users may explicitly choose
+another configured provider in Advanced settings.
 
 ---
 
@@ -123,7 +146,7 @@ The extension can override the AI provider per-request with the `x-ai-provider` 
 - **Guided onboarding** — PDF/DOCX/text upload with LLM extraction and editable profile confirmation
 - **Inline editor** — every field is `contentEditable`, autosaves on blur, section reordering via ▲▼, A4 page guides while editing
 - **Per-section regeneration** — hover a section heading for the **Regenerate** button
-- **Resume quality checks** — scores completeness before export; `unsupportedClaims` warns but doesn't block export
+- **Evidence-first quality checks** — separate Evidence, Relevance, Readability, ATS, and Appropriateness signals; unresolved factual failures block export
 - **Export** — DOCX and PDF, honoring custom section order
 - **Tracker** — local read-only view of all tailored drafts
 - **Cloud sync** — sign in to push/pull profile and drafts to Postgres (last-write-wins, debounced)
@@ -174,5 +197,5 @@ Integration tests (`db.integration.test.ts`) require a live Postgres connection.
 | New schema fields silently missing | Stale `packages/shared/dist` | `npm run build -w @cv-tailor/shared` |
 | User sees sign-in screen, all data gone | Invalid field in stored `auth` object triggers a full reset to empty state | Check Chrome DevTools → Application → Local Storage |
 | Tailoring seems low quality | CCC not configured, fell back to built-in | Check `GET /health` → `ccc.available`; set `CCC_ENGINE_ROOT` |
-| Quota errors | OpenAI key exhausted | Switch to `AI_PROVIDER=gemini-api` |
+| Quota errors | Provider key exhausted or rate-limited | Verify the Groq quota/key or temporarily select another configured provider |
 | `skillCategories` dropped after tailor | `foldSkillCategories()` not called after LLM response | Ensure it runs after every tailor/regenerate/extract in `apps/api/src/app.ts` |

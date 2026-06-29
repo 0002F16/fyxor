@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyRegeneratedSection, baseProfileSchema, bulletHasMetric, educationHasContent, emptyStorageState, flattenSkillCategories, formatEducationEntry, migrateStorage, normalizeSkillCategories, resumeStyleVars, tailoredCvSchema, tailoringJobKey } from "./index";
+import { applyRegeneratedSection, baseProfileSchema, bulletHasMetric, educationHasContent, emptyStorageState, flattenSkillCategories, formatEducationEntry, migrateStorage, missingStructuredProfileEvidence, normalizeSkillCategories, resumeStyleVars, tailoredCvSchema, tailoringJobKey } from "./index";
 
 describe("applyRegeneratedSection", () => {
   // Builds a valid TailoredCv the user has been editing, with distinct content
@@ -7,7 +7,7 @@ describe("applyRegeneratedSection", () => {
   const current = () => tailoredCvSchema.parse({
     id: "cv1", baseProfileId: "p1",
     job: { title: "Engineer", company: "Acme", description: "x".repeat(40) },
-    outputLanguage: "en", contact: { name: "Jane" },
+    contact: { name: "Jane" },
     summary: "EDITED summary the user just typed",
     experiences: [
       { id: "e1", company: "Acme", role: "Dev", bullets: ["edited e1 bullet"] },
@@ -22,7 +22,7 @@ describe("applyRegeneratedSection", () => {
     const regenerated = tailoredCvSchema.parse({ ...current(), summary: "AI summary", experiences: [], skills: ["wiped"], skillCategories: {}, sectionOrder: [], dismissedChecks: [] });
     const out = applyRegeneratedSection(current(), regenerated, "summary");
     expect(out.summary).toBe("AI summary");
-    expect(out.experiences.map((e) => e.bullets)).toEqual([["edited e1 bullet"], ["edited e2 bullet"]]);
+    expect(out.experiences.map((e) => e.bullets.map((bullet) => bullet.text))).toEqual([["edited e1 bullet"], ["edited e2 bullet"]]);
     expect(out.skills).toEqual(["EditedSkill"]);
     expect(out.sectionOrder).toEqual(["skills", "summary", "experience"]);
     expect(out.dismissedChecks).toEqual(["check-1"]);
@@ -45,14 +45,15 @@ describe("applyRegeneratedSection", () => {
       ]
     });
     const out = applyRegeneratedSection(current(), regenerated, "experience", "e1");
-    expect(out.experiences[0]!.bullets).toEqual(["AI e1 bullet"]);
-    expect(out.experiences[1]!.bullets).toEqual(["edited e2 bullet"]); // untouched
+    expect(out.experiences[0]!.bullets.map((bullet) => bullet.text)).toEqual(["AI e1 bullet"]);
+    expect(out.experiences[1]!.bullets.map((bullet) => bullet.text)).toEqual(["edited e2 bullet"]); // untouched
     expect(out.summary).toBe("EDITED summary the user just typed");
   });
 
   it("is a no-op when the experienceId matches nothing", () => {
-    const regenerated = tailoredCvSchema.parse({ ...current(), experiences: [{ id: "zzz", company: "X", role: "Y", bullets: ["nope"] }] });
-    expect(applyRegeneratedSection(current(), regenerated, "experience", "missing")).toEqual(current());
+    const baseline = current();
+    const regenerated = tailoredCvSchema.parse({ ...baseline, experiences: [{ id: "zzz", company: "X", role: "Y", bullets: ["nope"] }] });
+    expect(applyRegeneratedSection(baseline, regenerated, "experience", "missing")).toEqual(baseline);
   });
 });
 
@@ -91,8 +92,47 @@ describe("storage migration", () => {
     const { aiProvider: _aiProvider, ...oldSettings } = state.settings;
     const previous = { ...state, settings: oldSettings };
     expect(migrateStorage(previous).pendingJob).toBeNull();
-    expect(migrateStorage(previous).settings.aiProvider).toBe("gemini-api");
+    expect(migrateStorage(previous).settings.aiProvider).toBe("groq-api");
     expect(migrateStorage(previous).settings.apiBaseUrl).toBe(previous.settings.apiBaseUrl);
+  });
+
+  it("moves installations using the former Gemini default to Groq", () => {
+    const state = emptyStorageState();
+    const previous = { ...state, settings: { ...state.settings, aiProvider: "gemini-api", providerDefaultMigrated: false } };
+    const migrated = migrateStorage(previous);
+    expect(migrated.settings.aiProvider).toBe("groq-api");
+    expect(migrated.settings.providerDefaultMigrated).toBe(true);
+  });
+
+  it("preserves an explicit provider choice after the Groq-default migration", () => {
+    const state = emptyStorageState();
+    const explicit = { ...state, settings: { ...state.settings, aiProvider: "gemini-api", providerDefaultMigrated: true } };
+    expect(migrateStorage(explicit).settings.aiProvider).toBe("gemini-api");
+  });
+
+  it("migrates version-one tailored bullets without fabricating citations", () => {
+    const previous = {
+      ...emptyStorageState(),
+      version: 1,
+      drafts: {
+        legacy: {
+          id: "legacy", baseProfileId: "p1",
+          job: { title: "Engineer", company: "Acme", description: "x".repeat(40) },
+          contact: { name: "Jane" }, summary: "Summary",
+          experiences: [{ id: "e1", sourceExperienceId: "s1", company: "Acme", role: "Engineer", bullets: ["Legacy bullet"] }],
+          education: [], skills: [], createdAt: "t0", updatedAt: "t0"
+        }
+      }
+    };
+    const migrated = migrateStorage(previous);
+    expect(migrated.version).toBe(2);
+    expect(migrated.drafts.legacy?.experiences[0]?.bullets[0]).toMatchObject({
+      id: "legacy_bullet_0",
+      text: "Legacy bullet",
+      sourceBulletIndexes: [],
+      evidenceStatus: "legacy-unverified"
+    });
+    expect(migrated.drafts.legacy?.readiness).toBe("needs-source-update");
   });
 });
 
@@ -182,5 +222,64 @@ describe("resumeStyleVars", () => {
       expect(v["--cv-accent-deep-rgb"]).toBe("15 23 42");
       expect(v["--cv-highlight-rgb"]).toBe("241 245 249"); // #f1f5f9
     }
+  });
+});
+
+describe("missingStructuredProfileEvidence", () => {
+  it("flags certification and language text lost by an older extraction", () => {
+    const profile = baseProfileSchema.parse({
+      id: "profile",
+      contact: { name: "Jane", email: "jane@example.com" },
+      rawText: "Certifications: ACCA F3 (In Progress). Languages: English B2, Polish B1.",
+      updatedAt: "2026-01-01"
+    });
+    expect(missingStructuredProfileEvidence(profile)).toEqual(["certifications", "languages"]);
+    expect(missingStructuredProfileEvidence({
+      ...profile,
+      certifications: ["ACCA F3 (In Progress)"],
+      languages: [{ language: "English", level: "B2" }]
+    })).toEqual([]);
+  });
+});
+
+describe("evidence-rich compatibility defaults", () => {
+  it("loads legacy skill evidence and plans without provenance fields", () => {
+    const cv = tailoredCvSchema.parse({
+      id: "legacy-rich",
+      baseProfileId: "profile",
+      job: { title: "Accountant", description: "A sufficiently detailed accounting job description." },
+      contact: { name: "Jane", email: "jane@example.com" },
+      summary: "Accountant",
+      experiences: [],
+      education: [],
+      skills: ["Excel"],
+      skillEvidence: [{ skill: "Excel", evidence: [] }],
+      evidencePlan: {
+        fit: "direct",
+        requirements: [{ id: "r1", text: "Excel", priority: "must" }],
+        summaryClaims: [],
+        roles: [],
+        skills: [{ skill: "Excel", category: "Tools" }],
+        certifications: [],
+        sectionOrder: [],
+        pageTarget: "one"
+      },
+      createdAt: "2026-01-01",
+      updatedAt: "2026-01-01"
+    });
+    expect(cv.skillEvidence[0]).toMatchObject({
+      provenance: "explicit",
+      sourceSkills: [],
+      requirementIds: []
+    });
+    expect(cv.evidencePlan?.requirements[0]).toMatchObject({
+      coverage: "unsupported",
+      evidence: [],
+      sourceSkills: []
+    });
+    expect(cv.evidencePlan?.skills[0]).toMatchObject({
+      provenance: "explicit",
+      sourceSkills: []
+    });
   });
 });

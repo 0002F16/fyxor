@@ -24,9 +24,11 @@ import {
   llmTailoredCvSchema,
   tailorRequestSchema
 } from "./schemas.js";
-import { makeDocx, makePdf } from "./export.js";
+import { makeDocx, makePdfWithAudit } from "./export.js";
 import { cccStatus, isCccAvailable, runCccEngine } from "./cccEngine.js";
 import { reviewExperienceTitles } from "./titleReview.js";
+import { generateUnifiedCv, PIPELINE_VERSION, regenerateUnifiedSection } from "./unifiedPipeline.js";
+import { cancelTailoringRun, createTailoringRun, getTailoringRun } from "./tailoringRuns.js";
 
 const asyncRoute = (fn: express.RequestHandler): express.RequestHandler =>
   (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
@@ -91,13 +93,19 @@ export function createApp(generatorFactory?: () => Generator) {
     } catch (error) { next(error); }
   };
 
-  const meter = async (req: express.Request, action: string) => {
-    if (!testMode) await recordUsage((req as AuthedRequest).userId, action);
+  const meter = async (req: express.Request, action: string, meta?: unknown) => {
+    if (!testMode) await recordUsage((req as AuthedRequest).userId, action, meta);
   };
 
   app.get("/health", (req, res) => {
     const status = providerStatus(resolveProvider(req.query.provider || req.header("x-ai-provider") || process.env.AI_PROVIDER));
-    res.json({ ok: true, ...status, configured: generatorFactory ? true : status.configured, ccc: cccStatus() });
+    res.json({
+      ok: true,
+      ...status,
+      configured: generatorFactory ? true : status.configured,
+      pipeline: { version: PIPELINE_VERSION, legacyEnabled: process.env.ENABLE_LEGACY_ENGINES === "true" },
+      ccc: cccStatus()
+    });
   });
 
   app.post("/api/profile/parse-file", asyncRoute(async (req, res) => {
@@ -171,10 +179,10 @@ export function createApp(generatorFactory?: () => Generator) {
     if (reservedEventId) res.on("close", () => { if (!res.writableEnded) void releaseOnce(); });
     try {
       const engine = req.header("x-tailoring-engine") || (req.body as { tailoringEngine?: string }).tailoringEngine;
-      // CCC is the default engine. When it is configured we run the multi-step
-      // studio pipeline; when it isn't we degrade to the built-in single pass so
-      // installs without the Python engine still tailor (instead of hard-failing).
-      if (engine === "ccc" && isCccAvailable()) {
+      const legacyEnabled = process.env.ENABLE_LEGACY_ENGINES === "true";
+      // Legacy engines exist only for controlled benchmarking/rollback. Normal
+      // production requests always take the unified evidence-first path.
+      if (legacyEnabled && engine === "ccc" && isCccAvailable()) {
         const generated = tailoredCvSchema.parse(await runCccEngine(input.profile, input.job));
         const cv = await reviewExperienceTitles(
           () => generatorOrThrow(req, generatorFactory),
@@ -182,12 +190,31 @@ export function createApp(generatorFactory?: () => Generator) {
           input.job,
           generated
         );
-        if (!reservedEventId) await meter(req, "tailor");
+        if (!reservedEventId) await meter(req, "tailor", { pipelineVersion: "legacy-ccc", engine: "ccc" });
         return res.json(cv);
       }
-      if (engine === "ccc") console.warn("CCC engine requested but not configured — falling back to the built-in tailor. Set CCC_ENGINE_ROOT to enable it.");
+      if (legacyEnabled && engine === "ccc") console.warn("CCC engine requested but not configured — falling back to the legacy built-in tailor.");
       const now = new Date().toISOString();
       const generator = generatorOrThrow(req, generatorFactory);
+      if (!legacyEnabled || engine !== "builtin") {
+        const cv = await generateUnifiedCv({
+          generator,
+          profile: input.profile,
+          job: input.job,
+          runId: crypto.randomUUID(),
+          provider: resolveProvider(req.header("x-ai-provider") || process.env.AI_PROVIDER),
+          model: providerStatus(resolveProvider(req.header("x-ai-provider") || process.env.AI_PROVIDER)).model
+        });
+        if (!reservedEventId) await meter(req, "tailor", {
+          pipelineVersion: cv.pipeline.pipelineVersion,
+          provider: cv.pipeline.provider,
+          model: cv.pipeline.model,
+          aiCallCount: cv.pipeline.aiCallCount,
+          repairCount: cv.pipeline.repairCount,
+          stages: cv.pipeline.stages
+        });
+        return res.json(cv);
+      }
       const result = await generator.generate({
         name: "tailored_cv",
         schema: llmTailoredCvSchema,
@@ -201,7 +228,7 @@ export function createApp(generatorFactory?: () => Generator) {
         input.job,
         generated
       );
-      if (!reservedEventId) await meter(req, "tailor");
+      if (!reservedEventId) await meter(req, "tailor", { pipelineVersion: "legacy-builtin", engine: "builtin" });
       res.json(cv);
     } catch (error) {
       // Tailoring failed — release the reserved slot so the user isn't charged.
@@ -210,9 +237,47 @@ export function createApp(generatorFactory?: () => Generator) {
     }
   }));
 
+  app.post("/api/tailoring-runs", requireAuth, asyncRoute(async (req, res) => {
+    const input = tailorRequestSchema.parse(req.body);
+    const provider = resolveProvider(req.header("x-ai-provider") || process.env.AI_PROVIDER);
+    const run = await createTailoringRun({
+      userId: (req as AuthedRequest).userId,
+      provider,
+      profile: input.profile,
+      job: input.job,
+      testMode,
+      generatorFactory,
+      freeMonthlyLimit: Number(process.env.FREE_MONTHLY_TAILORS || 0)
+    });
+    res.status(202).json(run);
+  }));
+
+  app.get("/api/tailoring-runs/:id", requireAuth, asyncRoute(async (req, res) => {
+    const run = await getTailoringRun(String(req.params.id), (req as AuthedRequest).userId, testMode);
+    if (!run) return res.status(404).json({ error: "Tailoring run not found" });
+    res.json(run);
+  }));
+
+  app.delete("/api/tailoring-runs/:id", requireAuth, asyncRoute(async (req, res) => {
+    const run = await cancelTailoringRun(String(req.params.id), (req as AuthedRequest).userId, testMode);
+    if (!run) return res.status(404).json({ error: "Tailoring run not found" });
+    res.json(run);
+  }));
+
   app.post("/api/cvs/regenerate", requireAuth, asyncRoute(async (req, res) => {
     const input = regenerationRequestSchema.parse(req.body);
     const generator = generatorOrThrow(req, generatorFactory);
+    if (input.cv.evidencePlan && input.cv.pipeline.pipelineVersion.startsWith("unified")) {
+      const patch = await regenerateUnifiedSection({
+        generator,
+        profile: input.profile,
+        cv: input.cv,
+        section: input.section,
+        experienceId: input.experienceId
+      });
+      await meter(req, "regenerate");
+      return res.json(patch);
+    }
     const result = await generator.generate({
       name: "regenerated_cv",
       schema: llmTailoredCvSchema,
@@ -276,10 +341,41 @@ export function createApp(generatorFactory?: () => Generator) {
     res.json(await monthlyUsage((req as AuthedRequest).userId));
   }));
 
-  app.post("/api/cvs/export", asyncRoute(async (req, res) => {
-    const { cv } = exportRequestSchema.parse(req.body);
+  app.post("/api/cvs/export", requireAuth, asyncRoute(async (req, res) => {
+    const { profile, cv } = exportRequestSchema.parse(req.body);
     const format = req.query.format === "pdf" ? "pdf" : "docx";
-    const buffer = format === "pdf" ? await makePdf(cv) : await makeDocx(cv);
+    const pdfResult = format === "pdf" ? await makePdfWithAudit(cv) : undefined;
+    const buffer = pdfResult ? pdfResult.buffer : await makeDocx(cv);
+    const extracted = format === "pdf"
+      ? await pdfParse(buffer)
+      : await mammoth.extractRawText({ buffer });
+    const text = ("text" in extracted ? extracted.text : extracted.value).toLocaleLowerCase().replace(/\s+/g, " ");
+    const expected = [
+      cv.contact.name,
+      cv.contact.email,
+      ...cv.experiences.flatMap((experience) => [
+        experience.role,
+        experience.company,
+        ...experience.bullets.map((bullet) => bullet.text)
+      ])
+    ].map((value) => value.trim()).filter(Boolean);
+    const missing = expected.filter((value) => !text.includes(value.toLocaleLowerCase().replace(/\s+/g, " ")));
+    const pageTarget = cv.evidencePlan?.pageTarget === "one" ? 1 : 2;
+    const pageCount = format === "pdf" && "numpages" in extracted ? Number(extracted.numpages) : undefined;
+    const layoutBlocked = Boolean(pdfResult?.audit.horizontalOverflow || pdfResult?.audit.clippedElementCount);
+    if (missing.length || (pageCount != null && pageCount > pageTarget) || layoutBlocked) {
+      return res.status(409).json({
+        error: "Export validation failed for the generated file.",
+        findings: [
+          ...(missing.length ? [{ id: "artifact-missing-content", detail: `Missing extracted content: ${missing.slice(0, 5).join("; ")}` }] : []),
+          ...(pageCount != null && pageCount > pageTarget ? [{ id: "artifact-page-overflow", detail: `Generated ${pageCount} pages; target is ${pageTarget}.` }] : []),
+          ...(layoutBlocked ? [{ id: "artifact-clipping", detail: "The final PDF contains horizontally clipped or overflowing content." }] : [])
+        ]
+      });
+    }
+    if (pdfResult && pageCount && pdfResult.audit.characterCount / pageCount > 5000) {
+      res.setHeader("X-Fyxor-Warnings", "The resume is visually dense; consider trimming content.");
+    }
     res.type(format === "pdf" ? "application/pdf" : "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
     const safeSegment = (s: string) => s.replace(/[^\w\s-]/g, "").trim().replace(/\s+/g, "-").slice(0, 60) || "cv";
     res.setHeader("Content-Disposition", `attachment; filename="${safeSegment(cv.job.company || "tailored")}-${safeSegment(cv.job.title || "cv")}.${format}"`);
@@ -289,7 +385,12 @@ export function createApp(generatorFactory?: () => Generator) {
   app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
     const message = error instanceof Error ? error.message : "Unknown error";
     console.error(error);
-    res.status(message.includes("not configured") || message.includes("Local Codex failed") ? 503 : 400).json({ error: message });
+    const status = message.includes("Monthly free limit reached")
+      ? 402
+      : message.includes("not configured") || message.includes("Local Codex failed")
+        ? 503
+        : 400;
+    res.status(status).json({ error: message });
   });
   return app;
 }

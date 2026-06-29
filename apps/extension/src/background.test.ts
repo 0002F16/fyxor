@@ -87,7 +87,8 @@ describe("background tailoring start", () => {
       { id: "profile-1" },
       { title: "Engineer", company: "Acme", url: "https://jobs.example/1" },
       "ccc",
-      expect.any(AbortSignal)
+      expect.any(AbortSignal),
+      expect.any(Function)
     );
   });
 });

@@ -8,8 +8,9 @@ import { GroqGenerator } from "./groq.js";
 export function resolveProvider(value: unknown): AiProvider {
   if (value === "openai-api") return "openai-api";
   if (value === "codex-local") return "codex-local";
+  if (value === "gemini-api") return "gemini-api";
   if (value === "groq-api") return "groq-api";
-  return "gemini-api";
+  return "groq-api";
 }
 
 export function createGenerator(provider: AiProvider): Generator {

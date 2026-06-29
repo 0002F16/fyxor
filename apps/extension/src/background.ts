@@ -30,13 +30,75 @@ function stopKeepAlive() {
 async function reconcileOrphanedTailoring() {
   const state = await getState();
   if (state.tailoringJob?.status === "running") {
-    await setTailoringJob({ status: "error", error: "Tailoring was interrupted. Please try again.", cvId: "", jobKey: state.tailoringJob.jobKey, startedAt: 0 });
+    if (!state.tailoringJob.runId || activeRun) {
+      await setTailoringJob({ status: "error", error: "Tailoring was interrupted. Please try again.", cvId: "", runId: state.tailoringJob.runId, stage: "", progress: 0, jobKey: state.tailoringJob.jobKey, startedAt: 0 });
+      return;
+    }
+    const controller = new AbortController();
+    const startedAt = state.tailoringJob.startedAt || Date.now();
+    activeRun = { controller, startedAt };
+    startKeepAlive();
+    void monitorExistingRun(
+      state.settings.apiBaseUrl,
+      state.settings.aiProvider,
+      state.tailoringJob.runId,
+      state.tailoringJob.jobKey,
+      startedAt,
+      controller
+    ).catch(console.error);
   }
 }
 
 // The in-flight tailoring run, so a Cancel message can abort its fetch. Only one
 // runs at a time (enforced by the single-flight guard below).
 let activeRun: { controller: AbortController; startedAt: number } | null = null;
+
+async function saveCompletedCv(cv: Awaited<ReturnType<typeof api.tailor>>, jobKey: string) {
+  const record: ApplicationRecord = {
+    id: makeId("application"),
+    job: cv.job,
+    tailoredCv: cv,
+    status: "not-sent",
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
+  await updateState((state) => ({
+    ...state,
+    pendingJob: null,
+    tailoringJob: { status: "done", error: "", cvId: cv.id, runId: cv.pipeline.runId, stage: "completed", progress: 100, jobKey, startedAt: 0 },
+    drafts: { ...state.drafts, [cv.id]: cv },
+    applications: [record, ...state.applications]
+  }));
+  await chrome.action.setBadgeText({ text: "" });
+}
+
+async function monitorExistingRun(
+  apiBaseUrl: string,
+  aiProvider: AiProvider,
+  runId: string,
+  jobKey: string,
+  startedAt: number,
+  controller: AbortController
+) {
+  try {
+    while (!controller.signal.aborted) {
+      const run = await api.tailoringRun(apiBaseUrl, aiProvider, runId, controller.signal);
+      if (run.status === "completed" && run.cv) {
+        await saveCompletedCv(run.cv, jobKey);
+        return;
+      }
+      if (run.status === "failed" || run.status === "cancelled") {
+        await setTailoringJob({ status: "error", error: run.error || `Tailoring ${run.status}`, cvId: "", runId, stage: run.stage, progress: run.progress, jobKey, startedAt: 0 });
+        return;
+      }
+      await setTailoringJob({ status: "running", error: "", cvId: "", runId, stage: run.stage, progress: run.progress, jobKey, startedAt });
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
+  } finally {
+    if (activeRun?.startedAt === startedAt) activeRun = null;
+    stopKeepAlive();
+  }
+}
 
 function startTailoring(payload: TailorPayload): boolean {
   // Only an actual in-memory run is authoritative. The popup may have UI state
@@ -56,32 +118,37 @@ function startTailoring(payload: TailorPayload): boolean {
 
 async function runTailoring(payload: TailorPayload, jobKey: string, startedAt: number, controller: AbortController) {
   try {
-    await setTailoringJob({ status: "running", error: "", cvId: "", jobKey, startedAt });
-    const cv = await api.tailor(payload.apiBaseUrl, payload.aiProvider, payload.profile, payload.job, payload.tailoringEngine, controller.signal);
+    await setTailoringJob({ status: "running", error: "", cvId: "", runId: "", stage: "queued", progress: 0, jobKey, startedAt });
+    const cv = await api.tailor(
+      payload.apiBaseUrl,
+      payload.aiProvider,
+      payload.profile,
+      payload.job,
+      payload.tailoringEngine,
+      controller.signal,
+      async (run) => {
+        await setTailoringJob({
+          status: "running",
+          error: "",
+          cvId: "",
+          runId: run.id,
+          stage: run.stage,
+          progress: run.progress,
+          jobKey,
+          startedAt
+        });
+      }
+    );
     // The user cancelled while the request was in flight (the Cancel handler
     // aborts this controller and clears the slot). Discard the result so a CV
     // never appears for a run the user explicitly cancelled.
     if (controller.signal.aborted) return;
-    const record: ApplicationRecord = {
-      id: makeId("application"),
-      job: payload.job,
-      tailoredCv: cv,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString()
-    };
-    await updateState((s) => ({
-      ...s,
-      pendingJob: null,
-      tailoringJob: { status: "done", error: "", cvId: cv.id, jobKey, startedAt: 0 },
-      drafts: { ...s.drafts, [cv.id]: cv },
-      applications: [record, ...s.applications]
-    }));
-    await chrome.action.setBadgeText({ text: "" });
+    await saveCompletedCv(cv, jobKey);
   } catch (cause) {
     // An aborted fetch is an intentional cancel, not a failure — exit quietly
     // (the Cancel handler already cleared the slot); never flash an error.
     if (controller.signal.aborted) return;
-    await setTailoringJob({ status: "error", error: (cause as Error).message, cvId: "", jobKey, startedAt: 0 });
+    await setTailoringJob({ status: "error", error: (cause as Error).message, cvId: "", runId: "", stage: "", progress: 0, jobKey, startedAt: 0 });
   } finally {
     if (activeRun?.startedAt === startedAt) activeRun = null;
     stopKeepAlive();
@@ -91,6 +158,10 @@ async function runTailoring(payload: TailorPayload, jobKey: string, startedAt: n
 // Abort the in-flight tailoring (if any) and clear the slot, so Cancel actually
 // stops the network/AI work instead of letting it complete and create a CV.
 function cancelTailoring() {
+  void getState().then((state) => {
+    const runId = state.tailoringJob?.runId;
+    if (runId) void api.cancelTailoringRun(state.settings.apiBaseUrl, state.settings.aiProvider, runId).catch(() => undefined);
+  });
   activeRun?.controller.abort();
   activeRun = null;
   stopKeepAlive();

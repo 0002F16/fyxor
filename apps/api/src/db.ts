@@ -26,6 +26,29 @@ const SCHEMA = `
   );
   CREATE INDEX IF NOT EXISTS usage_events_user_month
     ON usage_events (user_id, created_at);
+  CREATE TABLE IF NOT EXISTS tailoring_runs (
+    id text PRIMARY KEY,
+    user_id text NOT NULL,
+    idempotency_key text NOT NULL,
+    pipeline_version text NOT NULL,
+    provider text NOT NULL,
+    status text NOT NULL,
+    stage text NOT NULL,
+    progress integer NOT NULL DEFAULT 0,
+    request jsonb,
+    result jsonb,
+    evaluation jsonb,
+    metadata jsonb,
+    usage_event_id bigint,
+    error text NOT NULL DEFAULT '',
+    cancel_requested boolean NOT NULL DEFAULT false,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    UNIQUE (user_id, idempotency_key, pipeline_version)
+  );
+  ALTER TABLE tailoring_runs ADD COLUMN IF NOT EXISTS usage_event_id bigint;
+  CREATE INDEX IF NOT EXISTS tailoring_runs_user_updated
+    ON tailoring_runs (user_id, updated_at DESC);
 `;
 
 export async function initDb(): Promise<void> {

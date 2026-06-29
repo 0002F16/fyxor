@@ -6,7 +6,6 @@ const profile: BaseProfile = {
   id: "profile-1",
   contact: { name: "Jane Doe", email: "jane@example.com", phone: "", location: "Manila", linkedIn: "" },
   targetRole: "Backend Engineer",
-  outputLanguage: "en",
   summary: "Software developer focused on reliable APIs.",
   experiences: [{
     id: "source-1",
@@ -45,9 +44,14 @@ function tailored(overrides: Partial<TailoredCv> = {}): TailoredCv {
     id: "cv-1",
     baseProfileId: profile.id,
     job,
-    outputLanguage: "en",
     contact: profile.contact,
     summary: "Software developer bringing reliable TypeScript API delivery and CI/CD experience to a backend engineering team.",
+    summaryClaims: [{
+      id: "claim-1",
+      text: "TypeScript API delivery and CI/CD experience",
+      evidence: [{ sourceExperienceId: "source-1", sourceBulletIndexes: [0, 1] }],
+      evidenceStatus: "verified"
+    }],
     experiences: [{
       id: "tailored-1",
       company: "Acme",
@@ -55,14 +59,24 @@ function tailored(overrides: Partial<TailoredCv> = {}): TailoredCv {
       startDate: "2022",
       endDate: "Present",
       bullets: [
-        "Built TypeScript APIs used by 12 internal teams, strengthening reliable service delivery.",
-        "Reduced deployment time by 25% through CI automation and repeatable release practices."
+        { id: "b1", text: "Built TypeScript APIs used by 12 internal teams, strengthening reliable service delivery.", sourceBulletIndexes: [0], evidenceStatus: "verified" },
+        { id: "b2", text: "Reduced deployment time by 25% through CI automation and repeatable release practices.", sourceBulletIndexes: [1], evidenceStatus: "verified" }
       ],
       sourceExperienceId: "source-1",
+      originalRole: "Software Developer",
+      titleEvidenceStatus: "unchanged",
       sourceBulletIndexes: [0, 1]
     }],
     education: [],
     skills: ["TypeScript", "API Design", "CI/CD"],
+    skillEvidence: ["TypeScript", "API Design", "CI/CD"].map((skill) => ({
+      skill,
+      evidence: [{ sourceExperienceId: "source-1", sourceBulletIndexes: [0] }],
+      evidenceStatus: "verified" as const,
+      provenance: "explicit" as const,
+      sourceSkills: [skill],
+      requirementIds: []
+    })),
     skillCategories: { Engineering: ["TypeScript", "API Design", "CI/CD"] },
     certifications: [],
     languages: [],
@@ -70,6 +84,8 @@ function tailored(overrides: Partial<TailoredCv> = {}): TailoredCv {
     style: { preset: "modern" },
     dismissedChecks: [],
     unsupportedClaims: [],
+    pipeline: { pipelineVersion: "test", runId: "", provider: "", model: "", stages: [], aiCallCount: 0, repairCount: 0 },
+    readiness: "ready",
     createdAt: "2026-01-01T00:00:00.000Z",
     updatedAt: "2026-01-01T00:00:00.000Z",
     ...overrides
@@ -86,7 +102,11 @@ describe("evaluateTailoredCv", () => {
   it("fails empty source citations and invented numeric claims", () => {
     const cv = tailored({
       summary: "Improved platform reliability by 40%.",
-      experiences: [{ ...tailored().experiences[0]!, sourceBulletIndexes: [] }]
+      experiences: [{
+        ...tailored().experiences[0]!,
+        bullets: tailored().experiences[0]!.bullets.map((bullet) => ({ ...bullet, sourceBulletIndexes: [] })),
+        sourceBulletIndexes: []
+      }]
     });
     const result = evaluateTailoredCv(profile, job, cv);
     expect(result.hardFailures.map((item) => item.id)).toEqual(expect.arrayContaining([
@@ -111,5 +131,46 @@ describe("evaluateTailoredCv", () => {
     const result = evaluateTailoredCv(profile, job, cv);
     expect(result.checks.find((item) => item.id === "skill-evidence")?.status).toBe("warn");
     expect(result.checks.find((item) => item.id === "title-reframing")?.status).toBe("warn");
+  });
+
+  it("warns but does not block export for an approved inferred baseline skill", () => {
+    const cv = tailored({
+      skills: [...tailored().skills, "Communication"],
+      skillEvidence: [
+        ...tailored().skillEvidence,
+        {
+          skill: "Communication",
+          evidence: [],
+          evidenceStatus: "needs-review",
+          provenance: "inferred-baseline",
+          sourceSkills: [],
+          requirementIds: []
+        }
+      ]
+    });
+    const result = evaluateTailoredCv(profile, job, cv);
+    expect(result.checks.find((item) => item.id === "inferred-skill-review")?.status).toBe("warn");
+    expect(result.hardFailures).toEqual([]);
+  });
+
+  it("warns but does not block export for high-confidence inferred summary context", () => {
+    const cv = tailored({
+      summary: "Software developer with TypeScript API delivery experience in a healthcare technology context.",
+      summaryClaims: [{
+        id: "claim-inference",
+        text: "healthcare technology context",
+        evidence: [{
+          kind: "inference",
+          value: "healthcare technology context",
+          basis: "Employer name and target industry",
+          confidence: "high"
+        }],
+        provenance: "inferred-context",
+        evidenceStatus: "needs-review"
+      }]
+    });
+    const result = evaluateTailoredCv(profile, job, cv);
+    expect(result.checks.find((item) => item.id === "summary-inference-review")?.status).toBe("warn");
+    expect(result.hardFailures).toEqual([]);
   });
 });

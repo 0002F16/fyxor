@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle, ArrowLeft, ArrowRight, BriefcaseBusiness, Check, ChevronDown, Cloud, CloudOff,
-  Download, FilePenLine, FileText, Lightbulb, LoaderCircle, LogOut, Mail, MousePointerClick,
-  Palette, PenLine, Pin, Plus, Save, Sparkles, Trash2, Upload, User, X
+  Copy, Download, ExternalLink, FilePenLine, FileText, Lightbulb, LoaderCircle, LogOut,
+  MoreVertical, MousePointerClick, Palette, PenLine, Pin, Plus, Reply, Save, Send, Sparkles,
+  Trash2, Upload, X
 } from "lucide-react";
 import {
   applyRegeneratedSection,
@@ -10,23 +11,27 @@ import {
   cvStyleSchema,
   educationHasContent,
   effectiveSectionOrder,
+  emptyStorageState,
   flattenSkillCategories,
   makeId,
+  markTailoredTextStale,
   migrateStorage,
+  missingStructuredProfileEvidence,
   normalizeSkillCategories,
   type ApplicationRecord,
+  type ApplicationStatus,
+  type AiProvider,
   type BaseProfile,
   type CvStyle,
   type JobDescription,
   type StorageState,
-  type TailoredCv,
-  type TailoringEngine
+  type TailoredCv
 } from "@cv-tailor/shared";
 import { api, ApiError, AuthExpiredError } from "./api";
 import { authClient } from "./auth";
 import { CvDocument } from "@cv-tailor/shared";
 import { ResumeStrength } from "./ResumeStrength";
-import { evaluateResume } from "./resumeChecks";
+import { evaluateResume, sectionCompleteness, type ProfileSectionId } from "./resumeChecks";
 import { clearAuthSession, clearAuthToken, getState, setAuthSession, setState, updateState } from "./storage";
 
 // Centralized handling for an expired session (401). Drops only the local bearer
@@ -48,6 +53,36 @@ function Logo() {
 
 function Loading({ label = "Working…" }: { label?: string }) {
   return <div className="flex items-center gap-2 text-sm text-muted"><LoaderCircle size={16} className="animate-spin" />{label}</div>;
+}
+
+// Hands a dropped file from the Welcome hero to the Onboarding component across the
+// hash navigation (same SPA render, no reload) so the user isn't asked to pick the
+// file twice. Consumed once on Onboarding mount, then cleared.
+let pendingUploadFile: File | null = null;
+
+// Turns the 10–30s parse+extract wait into a sense of forward motion: each stage
+// reveals in turn — done stages get a check, the active one spins, later ones stay
+// muted. Advances on a gentle timer (we have no real per-stage signal) and falls
+// back to a single static line when the user prefers reduced motion.
+function StagedLoader({ stages }: { stages: string[] }) {
+  const [active, setActive] = useState(0);
+  const reduced = typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
+  useEffect(() => {
+    if (reduced) return;
+    const id = setInterval(() => setActive((i) => Math.min(i + 1, stages.length - 1)), 4200);
+    return () => clearInterval(id);
+  }, [stages.length, reduced]);
+  if (reduced) return <Loading label="Building your profile…" />;
+  return <ul className="space-y-2.5">
+    {stages.map((stage, i) => <li key={stage} className="flex items-center gap-2.5 text-sm onboarding-rise" style={{ animationDelay: `${i * 60}ms` }}>
+      {i < active
+        ? <span className="flex h-5 w-5 items-center justify-center rounded-full bg-emerald text-white"><Check size={12} strokeWidth={3} /></span>
+        : i === active
+          ? <LoaderCircle size={20} className="animate-spin text-emerald" />
+          : <span className="h-5 w-5 rounded-full border-2 border-line" />}
+      <span className={i <= active ? "font-medium text-ink" : "text-muted"}>{stage}</span>
+    </li>)}
+  </ul>;
 }
 
 function ErrorBox({ message }: { message: string }) {
@@ -129,6 +164,39 @@ function StrengthPanel({ state, doc, kind, onDismiss, onChange }: {
     return <button className="flex items-center gap-1.5 text-xs font-medium text-muted hover:text-emerald hover:underline" onClick={() => setHidden(false)}><Lightbulb size={14} /> Show resume tips</button>;
   }
   return <ResumeStrength strength={strength} onDismiss={onDismiss} onHide={() => setHidden(true)} />;
+}
+
+function QualitySignals({ cv }: { cv: TailoredCv }) {
+  const dimensions = [
+    ["truthfulness", "Evidence"],
+    ["relevance", "Relevance"],
+    ["readability", "Readability"],
+    ["ats", "ATS & format"],
+    ["appropriateness", "Appropriateness"]
+  ] as const;
+  const findings = cv.evaluation?.checks.filter((finding) => finding.status !== "pass") ?? [];
+  return <div className="card">
+    <div className="flex items-center justify-between gap-2">
+      <div className="flex items-center gap-2 text-sm font-semibold"><Sparkles size={16} className="text-emerald" /> Quality review</div>
+      <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold uppercase ${cv.readiness === "ready" ? "bg-mint text-deep" : "bg-red-50 text-red-700"}`}>{cv.readiness.replaceAll("-", " ")}</span>
+    </div>
+    <div className="mt-3 grid grid-cols-2 gap-2">
+      {dimensions.map(([key, label]) => {
+        const score = cv.evaluation?.scores[key];
+        return <div key={key} className="rounded-lg border border-line px-2 py-1.5">
+          <p className="text-[10px] font-semibold uppercase tracking-wide text-muted">{label}</p>
+          <p className={`text-sm font-bold ${(score ?? 0) >= 80 ? "text-emerald" : "text-amber-600"}`}>{score == null ? "Pending" : `${score}%`}</p>
+        </div>;
+      })}
+    </div>
+    {findings.length > 0 && <div className="mt-3 space-y-2">
+      {findings.slice(0, 6).map((finding) => <div key={finding.id} className={`rounded-lg border p-2 text-xs ${finding.status === "fail" ? "border-red-200 bg-red-50 text-red-800" : "border-amber-200 bg-amber-50 text-amber-900"}`}>
+        <p className="font-semibold">{finding.label}</p><p className="mt-0.5">{finding.detail}</p>
+      </div>)}
+      {cv.readiness !== "ready" && <button className="btn-secondary w-full text-xs" onClick={() => { location.hash = "#resume"; }}>Add missing evidence to base CV</button>}
+    </div>}
+    <p className="mt-3 text-[10px] text-muted">{cv.pipeline.pipelineVersion} · {cv.pipeline.aiCallCount} AI calls{cv.pipeline.model ? ` · ${cv.pipeline.model}` : ""}</p>
+  </div>;
 }
 
 // One-time, dismissible nudge so first-time users discover the canvas is editable.
@@ -243,33 +311,89 @@ function SkillChips({ skills, onChange }: { skills: string[]; onChange: (next: s
   </div>;
 }
 
-function Onboarding({ state, onChange, initialMode = "upload" }: { state: StorageState; onChange: (s: StorageState) => void; initialMode?: "upload" | "manual" }) {
-  const [step, setStep] = useState(initialMode === "manual" ? 2 : 1);
-  const [rawText, setRawText] = useState(state.profile?.rawText || "");
-  const [profile, setProfile] = useState<BaseProfile>(state.profile || {
+// Onboarding is a small view machine. The parse path is short — source → summary
+// (smart auto-skip review cards) → final review — while the manual path walks the
+// full section flow. Both share one set of section editors.
+type OnbView = "source" | "summary" | ProfileSectionId | "review";
+const MANUAL_FLOW: OnbView[] = ["basics", "experience", "skills", "education", "extras", "review"];
+const MANUAL_STEPS: OnbView[] = ["basics", "experience", "skills", "education", "extras"];
+const ONB_VIEWS: OnbView[] = ["source", "summary", "basics", "experience", "skills", "education", "extras", "review"];
+const SECTION_META: Record<ProfileSectionId, { title: string; blurb: string }> = {
+  basics: { title: "The basics", blurb: "These details appear at the top of every tailored CV." },
+  experience: { title: "Your experience", blurb: "Add real duties and achievements. Tailoring reframes these — it never invents them." },
+  skills: { title: "Your skills", blurb: "Add your skills, then let AI sort them into clean, resume-ready groups." },
+  education: { title: "Education", blurb: "Add your degree or qualifications so the resume isn't missing a section recruiters expect." },
+  extras: { title: "Certifications & languages", blurb: "Optional — leave anything blank if it doesn't apply." }
+};
+
+function Onboarding({ state, onChange, initialMode = "upload", initialView }: { state: StorageState; onChange: (s: StorageState) => void; initialMode?: "upload" | "manual"; initialView?: OnbView }) {
+  const initialProfile: BaseProfile = state.profile || {
     id: makeId("profile"), contact: { name: "", email: "", phone: "", location: "", linkedIn: "" },
-    targetRole: "", outputLanguage: "en", summary: "", experiences: [], education: [], skills: [], skillCategories: {}, certifications: [], languages: [], sectionOrder: [], style: { preset: "modern" }, dismissedChecks: [], rawText: "", updatedAt: new Date().toISOString()
-  });
+    targetRole: "", summary: "", experiences: [], education: [], skills: [], skillCategories: {}, certifications: [], languages: [], sectionOrder: [], style: { preset: "modern" }, dismissedChecks: [], rawText: "", updatedAt: new Date().toISOString()
+  };
+  const savedStep = state.settings.onboardingStep as OnbView;
+  const [view, setView] = useState<OnbView>(
+    state.profile && !state.settings.onboardingComplete && ONB_VIEWS.includes(savedStep)
+      ? savedStep
+      : initialView ?? (initialMode === "manual" ? "basics" : "source")
+  );
+  const [rawText, setRawText] = useState(state.profile?.rawText || "");
+  const [profile, setProfile] = useState<BaseProfile>(initialProfile);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
+  // Summary cards: ⚠ (incomplete) sections start expanded so the only sections the
+  // user is nudged to touch are the ones that actually need it.
+  const [expanded, setExpanded] = useState<Set<ProfileSectionId>>(() => new Set(sectionCompleteness(initialProfile).filter((s) => !s.complete).map((s) => s.id)));
+  // Holds the last grouping so "Remove grouping" can be undone instead of silently
+  // wiping hand-edited categories.
+  const [groupingUndo, setGroupingUndo] = useState<Record<string, string[]> | null>(null);
+  const mounted = useRef(false);
   const base = state.settings.apiBaseUrl;
   const provider = state.settings.aiProvider;
 
-  async function parseFile(file?: File) {
-    if (!file) return;
-    setBusy("Reading CV…"); setError("");
+  // A file dropped on the Welcome hero is handed over here — run the full
+  // parse→structure in one shot so an uploaded resume lands on the summary.
+  useEffect(() => {
+    if (pendingUploadFile && view === "source") { const file = pendingUploadFile; pendingUploadFile = null; runUpload(file); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Autosave the in-progress profile and the current view, so a refresh or crash
+  // resumes exactly here. Never flips onboardingComplete (that's finish()'s job);
+  // skips the first render and the pre-parse source screen (no real profile yet).
+  useEffect(() => {
+    if (state.settings.onboardingComplete || view === "source") return;
+    if (!mounted.current) { mounted.current = true; return; }
+    const timer = setTimeout(() => {
+      updateState((s) => ({ ...s, profile: { ...profile, rawText, updatedAt: new Date().toISOString() }, settings: { ...s.settings, onboardingStep: view } })).then(onChange);
+    }, 800);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [profile, rawText, view]);
+
+  function landOnSummary(result: BaseProfile) {
+    setProfile(result);
+    setExpanded(new Set(sectionCompleteness(result).filter((s) => !s.complete).map((s) => s.id)));
+    setView("summary");
+  }
+
+  // One-action upload: parse the file to text, then immediately structure it.
+  async function runUpload(file: File) {
+    setBusy("structuring"); setError("");
     try {
-      const result = await api.parseFile(base, provider, await fileToBase64(file), file.name);
-      setRawText(result.text);
-    } catch (e) { if (!(await handleAuthExpiry(e, onChange))) setError((e as Error).message); } finally { setBusy(""); }
+      const parsed = await api.parseFile(base, provider, await fileToBase64(file), file.name);
+      setRawText(parsed.text);
+      if (parsed.text.trim().length < 30) { setError("We couldn't read enough text from that file. Try pasting your CV text instead."); return; }
+      landOnSummary(await api.extract(base, provider, parsed.text));
+    } catch (e) { if (!(await handleAuthExpiry(e, onChange))) setError((e as Error).message); }
+    finally { setBusy(""); }
   }
 
   async function structure() {
     if (rawText.trim().length < 30) return setError("Paste or upload enough CV text first.");
-    setBusy("Structuring your profile…"); setError("");
+    setBusy("structuring"); setError("");
     try {
-      const result = await api.extract(base, provider, rawText, profile.outputLanguage);
-      setProfile(result); setStep(2);
+      landOnSummary(await api.extract(base, provider, rawText));
     } catch (e) { if (!(await handleAuthExpiry(e, onChange))) setError((e as Error).message); }
     finally { setBusy(""); }
   }
@@ -354,9 +478,19 @@ function Onboarding({ state, onChange, initialMode = "upload" }: { state: Storag
   function removeCategory(index: number) {
     writeSkillCategories(skillCategories.filter((_, i) => i !== index));
   }
+  // Non-destructive: stash the grouping so it can be restored, then flatten.
+  function removeGrouping() {
+    setGroupingUndo(profile.skillCategories);
+    setProfile({ ...profile, skillCategories: {}, skills: flattenSkillCategories(skillCategories) });
+  }
+  function undoRemoveGrouping() {
+    if (!groupingUndo) return;
+    setProfile({ ...profile, skillCategories: groupingUndo, skills: flattenSkillCategories(normalizeSkillCategories(groupingUndo, profile.skills)) });
+    setGroupingUndo(null);
+  }
 
   async function finish() {
-    const next = { ...state, profile: { ...profile, rawText, updatedAt: new Date().toISOString() }, settings: { ...state.settings, onboardingComplete: true } };
+    const next = { ...state, profile: { ...profile, rawText, updatedAt: new Date().toISOString() }, settings: { ...state.settings, onboardingComplete: true, onboardingStep: "" } };
     await setState(next); onChange(next); location.hash = "#pin";
   }
 
@@ -368,110 +502,185 @@ function Onboarding({ state, onChange, initialMode = "upload" }: { state: Storag
     { key: "linkedIn", label: "LinkedIn profile URL", placeholder: "https://linkedin.com/in/…", required: false }
   ] as const;
 
-  // Once the required basics exist, let the user finish from any later step
-  // instead of forcing a walk through all six.
+  // Required basics let the user finish early instead of walking every section.
   const basicsValid = profile.contact.name.trim().length > 0 && profile.contact.email.trim().length > 0;
-  const canFinishEarly = step >= 2 && step < 6 && basicsValid;
+  const sections = sectionCompleteness(profile);
+  const incomplete = sections.filter((s) => !s.complete);
+  const pctComplete = Math.round((sections.filter((s) => s.complete).length / sections.length) * 100);
+  const toggleExpanded = (id: ProfileSectionId) => setExpanded((prev) => { const next = new Set(prev); next.has(id) ? next.delete(id) : next.add(id); return next; });
 
-  return <Shell title="Build your base profile" eyebrow="Your experience, properly framed">
-    <div className="mb-6">
+  const renderBasics = () => <>
+    <div className="grid gap-4 sm:grid-cols-2">
+      {BASIC_FIELDS.map(({ key, label, placeholder, required }) => <label key={key}><span className="label">{label}</span><input className="field" required={required} placeholder={placeholder} value={profile.contact[key]} onChange={(e) => setProfile({ ...profile, contact: { ...profile.contact, [key]: e.target.value } })} /></label>)}
+      <label><span className="label">Target role</span><input className="field" placeholder="Senior Product Designer" value={profile.targetRole} onChange={(e) => setProfile({ ...profile, targetRole: e.target.value })} /></label>
+    </div>
+    <label className="mt-4 block"><span className="label">Professional summary</span><textarea className="field min-h-28" placeholder="Two or three lines on who you are and the impact you've had." value={profile.summary} onChange={(e) => setProfile({ ...profile, summary: e.target.value })} /></label>
+  </>;
+
+  const renderExperience = () => <>
+    <div className="space-y-4">{profile.experiences.map((experience) => <div className="rounded-2xl border border-line bg-soft p-4" key={experience.id}>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <input className="field" placeholder="Role — e.g. Senior Product Designer" value={experience.role} onChange={(e) => updateExperience(experience.id, { role: e.target.value })} />
+        <input className="field" placeholder="Company — e.g. Acme" value={experience.company} onChange={(e) => updateExperience(experience.id, { company: e.target.value })} />
+        <input className="field" placeholder="Start (e.g. Jan 2021)" value={experience.startDate} onChange={(e) => updateExperience(experience.id, { startDate: e.target.value })} />
+        <input className="field" placeholder="End (e.g. Present)" value={experience.endDate} onChange={(e) => updateExperience(experience.id, { endDate: e.target.value })} />
+      </div>
+      <textarea className="field mt-3 min-h-28" placeholder="One bullet per line — e.g. Cut onboarding drop-off 32% by redesigning the signup flow" value={experience.bullets.join("\n")} onChange={(e) => updateExperience(experience.id, { bullets: e.target.value.split("\n") })} />
+      {experience.bullets.some((b) => b.trim()) && !experience.bullets.some(bulletHasMetric) && <p className="mt-2 flex items-start gap-1.5 text-xs text-amber-600"><Lightbulb size={14} className="mt-px shrink-0" /> Add a number where you can — e.g. "cut deploy time 40%" or "led a team of 6". Metrics make tailoring far stronger.</p>}
+      <div className="mt-3 flex justify-end"><button className="btn-secondary !px-3 text-red-600" onClick={() => removeExperience(experience.id)}><Trash2 size={15} /> Remove role</button></div>
+    </div>)}</div>
+    <button className="mt-4 btn-secondary" onClick={addExperience}><Plus size={16} /> {profile.experiences.length ? "Add another role" : "Add your first role"}</button>
+  </>;
+
+  const renderSkills = () => <>
+    {!hasSkillCategories ? <>
+      <div className="flex items-center justify-between"><span className="label !mb-0">Your skills</span><button className="btn-secondary !px-3 !py-1.5 text-sm" disabled={!!busy || !profile.skills.length} onClick={groupSkills}>{busy === "Grouping your skills…" ? <LoaderCircle size={15} className="animate-spin" /> : <Sparkles size={15} />} Group with AI</button></div>
+      <SkillChips skills={profile.skills} onChange={setSkills} />
+      {groupingUndo && <button className="mt-2 inline-flex items-center gap-1.5 text-xs font-semibold text-emerald hover:underline" onClick={undoRemoveGrouping}><Reply size={13} /> Undo remove grouping</button>}
+    </> : <>
+      <div className="flex items-center justify-between">
+        <span className="label !mb-0">Skill categories</span>
+        <div className="flex items-center gap-2">
+          <button className="btn-secondary !px-3 !py-1.5 text-sm text-muted" onClick={removeGrouping}>Remove grouping</button>
+          <button className="btn-secondary !px-3 !py-1.5 text-sm" onClick={addCategory}><Plus size={15} /> Category</button>
+        </div>
+      </div>
+      <div className="mt-3 space-y-3">{skillCategories.map(([name, entries], index) => <div className="rounded-2xl border border-line bg-soft p-3" key={index}>
+        <div className="flex items-center gap-2">
+          <input className="field !mb-0 font-semibold" placeholder="Category (e.g. Languages)" value={name} onChange={(e) => renameCategory(index, e.target.value)} />
+          <button className="btn-secondary !px-3 text-red-600" aria-label="Remove category" onClick={() => removeCategory(index)}><Trash2 size={15} /></button>
+        </div>
+        <SkillEntriesInput entries={entries} onCommit={(next) => editCategoryEntries(index, next)} />
+      </div>)}</div>
+    </>}
+  </>;
+
+  const renderEducation = () => <>
+    <div className="space-y-3">{profile.education.map((entry) => <div className="rounded-2xl border border-line bg-soft p-3" key={entry.id}>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <input className="field" placeholder="School *" value={entry.school} onChange={(e) => updateEducation(entry.id, { school: e.target.value })} />
+        <input className="field" placeholder="Location (e.g. Cambridge, MA)" value={entry.location} onChange={(e) => updateEducation(entry.id, { location: e.target.value })} />
+        <input className="field" placeholder="Degree & concentration" value={entry.degree} onChange={(e) => updateEducation(entry.id, { degree: e.target.value })} />
+        <input className="field" placeholder="Graduation date (e.g. May 2024)" value={entry.graduationDate} onChange={(e) => updateEducation(entry.id, { graduationDate: e.target.value })} />
+        <input className="field" placeholder="GPA (optional)" value={entry.gpa} onChange={(e) => updateEducation(entry.id, { gpa: e.target.value })} />
+        <input className="field" placeholder="Honors / distinctions (optional)" value={entry.honors} onChange={(e) => updateEducation(entry.id, { honors: e.target.value })} />
+      </div>
+      <textarea className="field mt-3 min-h-20" placeholder="Relevant coursework — one per line (optional)" value={entry.coursework.join("\n")} onChange={(e) => updateEducation(entry.id, { coursework: e.target.value.split("\n") })} />
+      <div className="mt-3 flex justify-end"><button className="btn-secondary !px-3 text-red-600" onClick={() => removeEducation(entry.id)}><Trash2 size={15} /> Remove</button></div>
+    </div>)}</div>
+    <button className="mt-3 btn-secondary" onClick={addEducation}><Plus size={16} /> {profile.education.length ? "Add another" : "Add your education"}</button>
+  </>;
+
+  const renderExtras = () => <>
+    <label className="block"><span className="label">Certifications</span><textarea className="field min-h-28" placeholder="AWS Certified Solutions Architect, 2023" value={profile.certifications.join("\n")} onChange={(e) => setProfile({ ...profile, certifications: e.target.value.split("\n").filter(Boolean) })} /><span className="mt-1 block text-xs text-muted">One per line.</span></label>
+    <div className="mt-5 flex items-center justify-between"><span className="label !mb-0">Languages</span><button className="btn-secondary !px-3 !py-1.5 text-sm" onClick={addLanguage}><Plus size={15} /> Language</button></div>
+    <div className="mt-3 space-y-3">{profile.languages.map((language, index) => <div className="flex items-center gap-3" key={index}>
+      <input className="field" placeholder="Language (e.g. Spanish)" value={language.language} onChange={(e) => updateLanguage(index, { language: e.target.value })} />
+      <input className="field" placeholder="Native / Fluent / B2" value={language.level} onChange={(e) => updateLanguage(index, { level: e.target.value })} />
+      <button className="btn-secondary !px-3 text-red-600" onClick={() => removeLanguage(index)}><Trash2 size={15} /></button>
+    </div>)}</div>
+    {!profile.languages.length && <button className="mt-3 btn-secondary" onClick={addLanguage}><Plus size={16} /> Add a language</button>}
+  </>;
+
+  const sectionBody = (id: ProfileSectionId) => id === "basics" ? renderBasics() : id === "experience" ? renderExperience() : id === "skills" ? renderSkills() : id === "education" ? renderEducation() : renderExtras();
+
+  // The pre-parse upload screen. Its own narrow card with the staged loader.
+  if (view === "source") return <Shell title="Build your base CV" eyebrow="Set up once, tailor to any job">
+    <div className="card mx-auto max-w-2xl">
+      {error && <div className="mb-4"><ErrorBox message={error} /></div>}
+      <h2 className="section-title">Start with your real CV</h2>
+      <p className="mt-2 text-sm text-muted">Upload a PDF or DOCX and we'll pull out your experience automatically. It's sent securely to AI — we never store the file.</p>
+      {busy ? <div className="mt-6"><StagedLoader stages={["Reading your CV", "Pulling out your experience", "Organizing your skills"]} /></div> : <>
+        <label className="onboarding-dropzone mt-5"><Upload size={22} /><span className="font-semibold">Upload PDF or DOCX</span><span className="text-xs text-muted">or drag &amp; drop a file</span><input type="file" accept=".pdf,.docx" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) runUpload(f); }} /></label>
+        <div className="my-4 flex items-center gap-3 text-xs text-muted"><span className="h-px flex-1 bg-line" /> or paste the text <span className="h-px flex-1 bg-line" /></div>
+        <textarea className="field min-h-48" placeholder="Paste your CV text here…" value={rawText} onChange={(e) => setRawText(e.target.value)} />
+        <div className="mt-4 flex items-center justify-between gap-2">
+          <span className="text-xs text-muted">{rawText.trim().length < 30 ? "Add a bit more text to continue" : "Looks good — ready to structure"}</span>
+          <div className="flex gap-2">
+            <button className="btn-secondary" onClick={() => setView("basics")}>Enter details manually</button>
+            <button className="btn-primary" disabled={rawText.trim().length < 30} onClick={structure}><Sparkles size={16} /> Structure with AI</button>
+          </div>
+        </div>
+      </>}
+    </div>
+  </Shell>;
+
+  const inManualStep = MANUAL_STEPS.includes(view);
+  const stepIndex = MANUAL_FLOW.indexOf(view);
+
+  return <Shell title="Build your base CV" eyebrow="Set up once, tailor to any job">
+    {inManualStep && <div className="mx-auto mb-6 max-w-3xl">
       <div className="mb-2 flex items-center justify-between">
-        <span className="text-xs font-semibold text-muted">{["CV source", "Basics", "Experience", "Skills & education", "Certifications & languages", "Review"][step - 1]}</span>
-        <span className="text-xs font-semibold text-muted">Step {step} of 6</span>
+        <span className="text-xs font-semibold text-muted">{SECTION_META[view as ProfileSectionId].title}</span>
+        <span className="text-xs font-semibold text-muted">Step {stepIndex + 1} of {MANUAL_FLOW.length} · {pctComplete}% there</span>
       </div>
       <div className="h-1.5 w-full overflow-hidden rounded-full bg-line">
-        <div className="h-full rounded-full bg-emerald transition-all duration-300" style={{ width: `${(step / 6) * 100}%` }} />
+        <div className="h-full rounded-full bg-emerald transition-all duration-300" style={{ width: `${((stepIndex + 1) / MANUAL_FLOW.length) * 100}%` }} />
       </div>
-    </div>
+    </div>}
+
     <div className="card mx-auto max-w-3xl">
       {error && <div className="mb-4"><ErrorBox message={error} /></div>}
-      {step === 1 && <>
-        <h2 className="section-title">Start with your real CV</h2>
-        <p className="mt-2 text-sm text-muted">Upload an existing file or paste your CV text. It's sent securely to AI to pull out your experience — we never store the file.</p>
-        <label className="mt-5 flex cursor-pointer items-center justify-center gap-2 rounded-2xl border-2 border-dashed border-line bg-soft p-7 text-sm font-semibold hover:border-emerald"><Upload size={18} /> Upload PDF or DOCX<input type="file" accept=".pdf,.docx" className="hidden" onChange={(e) => parseFile(e.target.files?.[0])} /></label>
-        <textarea className="field mt-4 min-h-64" placeholder="Or paste your CV text here…" value={rawText} onChange={(e) => setRawText(e.target.value)} />
-        <div className="mt-4 flex items-center justify-between">{busy ? <Loading label={busy} /> : <span className="text-xs text-muted">{rawText.trim().length < 30 ? "Add a bit more text to continue" : "Looks good — ready to structure"}</span>}<div className="flex gap-2"><button className="btn-secondary" disabled={!!busy} onClick={() => setStep(2)}>Skip — enter details manually</button><button className="btn-primary" disabled={!!busy} onClick={structure}><Sparkles size={16} /> Structure with AI</button></div></div>
+
+      {view === "summary" && <>
+        <h2 className="section-title">Here's what we found</h2>
+        <p className="mt-2 text-sm text-muted">We pulled your details into a base CV. Sections marked <span className="font-semibold text-amber-600">Needs a look</span> are worth a quick check — the rest is ready to go.</p>
+        <div className="mt-5 space-y-3">{sections.map((s, i) => {
+          const open = expanded.has(s.id);
+          return <div key={s.id} className="status-card onboarding-rise" style={{ animationDelay: `${i * 50}ms` }}>
+            <button type="button" className="flex w-full items-center gap-3 text-left" onClick={() => toggleExpanded(s.id)}>
+              {s.complete
+                ? <span className="status-chip status-chip-ok"><Check size={13} strokeWidth={3} /> Looks complete</span>
+                : <span className="status-chip status-chip-warn"><AlertTriangle size={13} /> Needs a look</span>}
+              <span className="min-w-0 flex-1"><span className="font-semibold text-ink">{s.label}</span><span className="block truncate text-xs text-muted">{s.complete ? s.summary : s.reason}</span></span>
+              <ChevronDown size={18} className={`shrink-0 text-muted transition-transform ${open ? "rotate-180" : ""}`} />
+            </button>
+            {open && <div className="mt-4 border-t border-line pt-4">{sectionBody(s.id)}</div>}
+          </div>;
+        })}</div>
       </>}
-      {step === 2 && <>
-        <h2 className="section-title">Check the basics</h2><p className="mt-2 text-sm text-muted">These details appear on every tailored CV.</p>
-        {initialMode === "manual" && <p className="mt-2 text-sm text-muted">Tip: upload a file or paste your CV on the previous step to auto-fill these.</p>}
-        <div className="mt-5 grid gap-4 sm:grid-cols-2">
-          {BASIC_FIELDS.map(({ key, label, placeholder, required }) => <label key={key}><span className="label">{label}</span><input className="field" required={required} placeholder={placeholder} value={profile.contact[key]} onChange={(e) => setProfile({ ...profile, contact: { ...profile.contact, [key]: e.target.value } })} /></label>)}
-          <label><span className="label">Target role</span><input className="field" placeholder="Product Designer" value={profile.targetRole} onChange={(e) => setProfile({ ...profile, targetRole: e.target.value })} /></label>
-        </div>
-        <label className="mt-4 block"><span className="label">Current summary</span><textarea className="field min-h-28" value={profile.summary} onChange={(e) => setProfile({ ...profile, summary: e.target.value })} /></label>
+
+      {inManualStep && <>
+        <h2 className="section-title">{SECTION_META[view as ProfileSectionId].title}</h2>
+        <p className="mt-2 mb-5 text-sm text-muted">{SECTION_META[view as ProfileSectionId].blurb}</p>
+        {sectionBody(view as ProfileSectionId)}
       </>}
-      {step === 3 && <>
-        <div className="flex items-center justify-between"><div><h2 className="section-title">Make your evidence clear</h2><p className="mt-2 text-sm text-muted">Add only real duties and achievements. Tailoring will reframe these, never invent them.</p></div><button className="btn-secondary" onClick={addExperience}><Plus size={16} /> Role</button></div>
-        <div className="mt-5 space-y-4">{profile.experiences.map((experience) => <div className="rounded-2xl border border-line bg-soft p-4" key={experience.id}>
-          <div className="grid gap-3 sm:grid-cols-2">
-            <input className="field" placeholder="Role" value={experience.role} onChange={(e) => updateExperience(experience.id, { role: e.target.value })} />
-            <input className="field" placeholder="Company" value={experience.company} onChange={(e) => updateExperience(experience.id, { company: e.target.value })} />
-            <input className="field" placeholder="Start (e.g. Jan 2021)" value={experience.startDate} onChange={(e) => updateExperience(experience.id, { startDate: e.target.value })} />
-            <input className="field" placeholder="End (e.g. Present)" value={experience.endDate} onChange={(e) => updateExperience(experience.id, { endDate: e.target.value })} />
-          </div>
-          <textarea className="field mt-3 min-h-28" placeholder="One bullet per line" value={experience.bullets.join("\n")} onChange={(e) => updateExperience(experience.id, { bullets: e.target.value.split("\n") })} />
-          {experience.bullets.some((b) => b.trim()) && !experience.bullets.some(bulletHasMetric) && <p className="mt-2 flex items-start gap-1.5 text-xs text-amber-600"><Lightbulb size={14} className="mt-px shrink-0" /> Add a number where you can — e.g. "cut deploy time 40%" or "led a team of 6". Metrics make tailoring far stronger.</p>}
-          <div className="mt-3 flex justify-end"><button className="btn-secondary !px-3 text-red-600" onClick={() => removeExperience(experience.id)}><Trash2 size={15} /> Remove role</button></div>
-        </div>)}</div>
-        {!profile.experiences.length && <button className="mt-5 btn-secondary" onClick={addExperience}><Plus size={16} /> Add your first role</button>}
-      </>}
-      {step === 4 && <>
-        <h2 className="section-title">Skills and education</h2><p className="mt-2 text-sm text-muted">Add your skills, then let AI sort them into clean, resume-ready categories. You can fine-tune the groups afterwards.</p>
-        {!hasSkillCategories ? <>
-          <div className="mt-5 flex items-center justify-between"><span className="label !mb-0">Your skills</span><button className="btn-secondary !px-3 !py-1.5 text-sm" disabled={!!busy || !profile.skills.length} onClick={groupSkills}>{busy === "Grouping your skills…" ? <LoaderCircle size={15} className="animate-spin" /> : <Sparkles size={15} />} Group with AI</button></div>
-          <SkillChips skills={profile.skills} onChange={setSkills} />
-        </> : <>
-          <div className="mt-5 flex items-center justify-between">
-            <span className="label !mb-0">Skill categories</span>
-            <div className="flex items-center gap-2">
-              <button className="btn-secondary !px-3 !py-1.5 text-sm text-muted" onClick={() => setProfile({ ...profile, skillCategories: {}, skills: flattenSkillCategories(skillCategories) })}>Remove grouping</button>
-              <button className="btn-secondary !px-3 !py-1.5 text-sm" onClick={addCategory}><Plus size={15} /> Category</button>
-            </div>
-          </div>
-          <div className="mt-3 space-y-3">{skillCategories.map(([name, entries], index) => <div className="rounded-2xl border border-line bg-soft p-3" key={index}>
-            <div className="flex items-center gap-2">
-              <input className="field !mb-0 font-semibold" placeholder="Category (e.g. Languages)" value={name} onChange={(e) => renameCategory(index, e.target.value)} />
-              <button className="btn-secondary !px-3 text-red-600" aria-label="Remove category" onClick={() => removeCategory(index)}><Trash2 size={15} /></button>
-            </div>
-            <SkillEntriesInput entries={entries} onCommit={(next) => editCategoryEntries(index, next)} />
-          </div>)}</div>
-        </>}
-        <div className="mt-5 flex items-center justify-between"><span className="label !mb-0">Education</span><button className="btn-secondary !px-3 !py-1.5 text-sm" onClick={addEducation}><Plus size={15} /> Education</button></div>
-        <div className="mt-3 space-y-3">{profile.education.map((entry) => <div className="rounded-2xl border border-line bg-soft p-3" key={entry.id}>
-          <div className="grid gap-3 sm:grid-cols-2">
-            <input className="field" placeholder="School *" value={entry.school} onChange={(e) => updateEducation(entry.id, { school: e.target.value })} />
-            <input className="field" placeholder="Location (e.g. Cambridge, MA)" value={entry.location} onChange={(e) => updateEducation(entry.id, { location: e.target.value })} />
-            <input className="field" placeholder="Degree & concentration" value={entry.degree} onChange={(e) => updateEducation(entry.id, { degree: e.target.value })} />
-            <input className="field" placeholder="Graduation date (e.g. May 2024)" value={entry.graduationDate} onChange={(e) => updateEducation(entry.id, { graduationDate: e.target.value })} />
-            <input className="field" placeholder="GPA (optional)" value={entry.gpa} onChange={(e) => updateEducation(entry.id, { gpa: e.target.value })} />
-            <input className="field" placeholder="Honors / distinctions (optional)" value={entry.honors} onChange={(e) => updateEducation(entry.id, { honors: e.target.value })} />
-          </div>
-          <textarea className="field mt-3 min-h-20" placeholder="Relevant coursework — one per line (optional)" value={entry.coursework.join("\n")} onChange={(e) => updateEducation(entry.id, { coursework: e.target.value.split("\n") })} />
-          <div className="mt-3 flex justify-end"><button className="btn-secondary !px-3 text-red-600" onClick={() => removeEducation(entry.id)}><Trash2 size={15} /> Remove</button></div>
-        </div>)}</div>
-        {!profile.education.length && <button className="mt-3 btn-secondary" onClick={addEducation}><Plus size={16} /> Add your education</button>}
-      </>}
-      {step === 5 && <>
-        <h2 className="section-title">Certifications and languages</h2><p className="mt-2 text-sm text-muted">Round out your profile. Leave anything blank if it doesn't apply.</p>
-        <label className="mt-5 block"><span className="label">Certifications</span><textarea className="field min-h-28" placeholder="AWS Certified Solutions Architect, 2023" value={profile.certifications.join("\n")} onChange={(e) => setProfile({ ...profile, certifications: e.target.value.split("\n").filter(Boolean) })} /><span className="mt-1 block text-xs text-muted">One per line.</span></label>
-        <div className="mt-5 flex items-center justify-between"><span className="label !mb-0">Languages</span><button className="btn-secondary !px-3 !py-1.5 text-sm" onClick={addLanguage}><Plus size={15} /> Language</button></div>
-        <div className="mt-3 space-y-3">{profile.languages.map((language, index) => <div className="flex items-center gap-3" key={index}>
-          <input className="field" placeholder="Language (e.g. Spanish)" value={language.language} onChange={(e) => updateLanguage(index, { language: e.target.value })} />
-          <input className="field" placeholder="Native / Fluent / B2" value={language.level} onChange={(e) => updateLanguage(index, { level: e.target.value })} />
-          <button className="btn-secondary !px-3 text-red-600" onClick={() => removeLanguage(index)}><Trash2 size={15} /></button>
-        </div>)}</div>
-        {!profile.languages.length && <button className="mt-3 btn-secondary" onClick={addLanguage}><Plus size={16} /> Add a language</button>}
-      </>}
-      {step === 6 && <>
-        <h2 className="section-title">Last look</h2><p className="mt-2 text-sm text-muted">Edit anything inline, then finish. You can keep refining everything later in the editor.</p>
-        <div className="mt-5 overflow-x-auto rounded-2xl border border-line bg-soft p-4">
+
+      {view === "review" && <>
+        <h2 className="section-title">Last look</h2>
+        <p className="mt-2 text-sm text-muted">Edit anything inline, then finish. You can keep refining everything later in the editor.</p>
+        <div className="your-resume-canvas mt-5 overflow-x-auto rounded-2xl border border-line bg-soft p-3 sm:p-6">
           <CvDocument cv={profile} editable headline={profile.targetRole}
-            onChange={(next) => setProfile({ ...profile, ...next })}
+            onChange={(next) => setProfile({
+              ...profile,
+              ...next,
+              experiences: next.experiences.map((experience) => ({
+                ...experience,
+                bullets: experience.bullets.map((bullet) => typeof bullet === "string" ? bullet : bullet.text)
+              }))
+            })}
             onCommitHeadline={(value) => setProfile({ ...profile, targetRole: value })} />
         </div>
       </>}
-      {step > 1 && <div className="mt-6 flex items-center justify-between gap-2"><button className="btn-secondary" onClick={() => setStep(step - 1)}><ArrowLeft size={16} /> Back</button><div className="flex gap-2">{canFinishEarly && <button className="btn-secondary" onClick={finish}><Check size={16} /> Finish setup</button>}{step < 6 ? <button className="btn-primary" onClick={() => setStep(step + 1)}>Continue <ArrowRight size={16} /></button> : <button className="btn-primary" onClick={finish}><Check size={16} /> Finish setup</button>}</div></div>}
+
+      {/* Footer navigation, per view */}
+      {view === "summary" && <div className="mt-6 flex items-center justify-between gap-2">
+        <button className="btn-secondary" onClick={() => setView("source")}><ArrowLeft size={16} /> Re-upload</button>
+        <button className="btn-primary" onClick={() => setView("review")}>{incomplete.length ? `Continue — ${incomplete.length} to double-check` : "Looks great — continue"} <ArrowRight size={16} /></button>
+      </div>}
+
+      {inManualStep && <div className="mt-6 flex items-center justify-between gap-2">
+        {stepIndex > 0 ? <button className="btn-secondary" onClick={() => setView(MANUAL_FLOW[stepIndex - 1] ?? "basics")}><ArrowLeft size={16} /> Back</button> : <span />}
+        <div className="flex gap-2">
+          {basicsValid && <button className="btn-secondary" onClick={finish}><Check size={16} /> Finish setup</button>}
+          <button className="btn-primary" onClick={() => setView(MANUAL_FLOW[stepIndex + 1] ?? "review")}>Continue <ArrowRight size={16} /></button>
+        </div>
+      </div>}
+
+      {view === "review" && <div className="mt-6 flex items-center justify-between gap-2">
+        <button className="btn-secondary" onClick={() => setView(rawText.trim().length >= 30 ? "summary" : "extras")}><ArrowLeft size={16} /> Back</button>
+        <button className="btn-primary" onClick={finish}><Check size={16} /> Finish setup</button>
+      </div>}
     </div>
   </Shell>;
 }
@@ -534,13 +743,13 @@ function Editor({ state, cvId, onChange }: { state: StorageState; cvId: string; 
       // Merge only the regenerated section into the LATEST edits (functional
       // update), so inline edits made to other sections while the request was in
       // flight aren't clobbered by the pre-edit snapshot the result was built on.
-      setCv((prev) => (prev ? applyRegeneratedSection(prev, result, section, experienceId) : result));
+      setCv((prev) => (prev ? applyRegeneratedSection(prev, result, section, experienceId) : currentCv));
     }
     catch (e) { if (!(await handleAuthExpiry(e, onChange))) setError((e as Error).message); } finally { setBusy(""); }
   }
   async function exportCv(format: "pdf" | "docx") {
     setBusy(`Creating ${format.toUpperCase()}…`); setError("");
-    try { downloadBlob(await api.export(state.settings.apiBaseUrl, state.settings.aiProvider, currentCv, format), `${currentCv.job.company || "tailored"}-${currentCv.job.title || "cv"}.${format}`); }
+    try { downloadBlob(await api.export(state.settings.apiBaseUrl, state.settings.aiProvider, state.profile!, currentCv, format), `${currentCv.job.company || "tailored"}-${currentCv.job.title || "cv"}.${format}`); }
     catch (e) { if (!(await handleAuthExpiry(e, onChange))) setError((e as Error).message); } finally { setBusy(""); }
   }
 
@@ -561,14 +770,32 @@ function Editor({ state, cvId, onChange }: { state: StorageState; cvId: string; 
       <div className="space-y-4">
         {error && <ErrorBox message={error} />}
         {busy && <div className="card"><Loading label={busy} /></div>}
-        {!!cv.unsupportedClaims.length && <div className="rounded-2xl border border-amber-300 bg-amber-50 p-4"><div className="flex gap-2 font-semibold text-amber-900"><AlertTriangle size={18} /> Review possible unsupported claims</div>{cv.unsupportedClaims.map((claim) => <p className="mt-2 text-sm text-amber-900" key={claim.text}><strong>{claim.section}:</strong> {claim.text} — {claim.reason}</p>)}</div>}
+        {!cv.evaluation && !!cv.unsupportedClaims.length && <div className="rounded-2xl border border-amber-300 bg-amber-50 p-4"><div className="flex gap-2 font-semibold text-amber-900"><AlertTriangle size={18} /> Review possible unsupported claims</div>{cv.unsupportedClaims.map((claim) => <p className="mt-2 text-sm text-amber-900" key={claim.text}><strong>{claim.section}:</strong> {claim.text} — {claim.reason}</p>)}</div>}
         <FirstEditHint state={state} onChange={onChange} />
-        <div className="rounded-2xl bg-soft p-3 ring-1 ring-line sm:p-6"><CvDocument cv={cv} editable onChange={(next) => { setCv(next as TailoredCv); markEdited.editing(); }} onCommitHeadline={(v) => { setCv({ ...currentCv, job: { ...currentCv.job, title: v } }); markEdited.editing(); }} onRegenerate={regenerate} busy={!!busy} /></div>
+        <div className="tailored-resume-canvas rounded-2xl bg-soft p-3 ring-1 ring-line sm:p-6"><CvDocument cv={cv} editable lockExperienceFacts onChange={(next) => {
+          let updated = next as TailoredCv;
+          if (updated.summary !== currentCv.summary) updated = markTailoredTextStale(updated, "summary");
+          if (JSON.stringify(updated.skills) !== JSON.stringify(currentCv.skills) || JSON.stringify(updated.skillCategories) !== JSON.stringify(currentCv.skillCategories)) {
+            updated = markTailoredTextStale(updated, "skills");
+          }
+          for (const experience of updated.experiences) {
+            const previous = currentCv.experiences.find((item) => item.id === experience.id);
+            if (previous && (
+              experience.role !== previous.role ||
+              experience.company !== previous.company ||
+              experience.startDate !== previous.startDate ||
+              experience.endDate !== previous.endDate ||
+              JSON.stringify(experience.bullets) !== JSON.stringify(previous.bullets)
+            )) {
+              updated = markTailoredTextStale(updated, "experience", experience.id);
+            }
+          }
+          setCv(updated); markEdited.editing();
+        }} onCommitHeadline={(v) => { setCv({ ...currentCv, job: { ...currentCv.job, title: v }, readiness: "blocked" }); markEdited.editing(); }} onRegenerate={regenerate} busy={!!busy} /></div>
       </div>
       <aside className="space-y-4 lg:sticky lg:top-24 lg:self-start">
         <InlineEditHint saveState={saveState}>Click any line in the resume to rewrite it. Hover a section heading to <span className="font-semibold text-emerald">Regenerate</span> or reorder with the ▲▼ arrows.</InlineEditHint>
-        <StrengthPanel state={state} doc={currentCv} kind="tailored" onChange={onChange}
-          onDismiss={(id) => { setCv({ ...currentCv, dismissedChecks: [...(currentCv.dismissedChecks ?? []), id] }); markEdited.editing(); }} />
+        <QualitySignals cv={currentCv} />
         <StylePanel value={currentCv.style} onChange={(style) => { setCv({ ...currentCv, style }); markEdited.editing(); }} />
         {showEducationNudge && (
           <div className="rounded-2xl border border-emerald bg-mint/40 p-4">
@@ -580,31 +807,235 @@ function Editor({ state, cvId, onChange }: { state: StorageState; cvId: string; 
             </div>
           </div>
         )}
-        <div className="card"><p className="text-sm font-semibold">Download</p><p className="mt-1 text-xs text-muted">Exports exactly what you see — a clean single-column ATS layout.</p><div className="mt-4 flex gap-2"><button className="btn-primary flex-1" onClick={() => exportCv("pdf")}><Download size={16} /> PDF</button><button className="btn-secondary flex-1" onClick={() => exportCv("docx")}><Download size={16} /> DOCX</button></div></div>
+        <div className="card"><p className="text-sm font-semibold">Download</p><p className="mt-1 text-xs text-muted">The exact exported file will receive one final format check.</p><div className="mt-4 flex gap-2"><button className="btn-primary flex-1" onClick={() => exportCv("pdf")}><Download size={16} /> PDF</button><button className="btn-secondary flex-1" onClick={() => exportCv("docx")}><Download size={16} /> DOCX</button></div></div>
         <button className="btn-secondary w-full" onClick={() => { location.hash = "#applications"; }}><ArrowLeft size={16} /> Back to applications</button>
       </aside>
     </div>
   </Shell>;
 }
 
-function Home({ state }: { state: StorageState }) {
-  const recent = [...state.applications]
-    .sort((a, b) => (b.updatedAt || b.createdAt).localeCompare(a.updatedAt || a.createdAt))
-    .slice(0, 3);
-  return <Shell title="Home" eyebrow="Your experience, properly framed">
-    {!state.profile && <div className="mb-5 card flex flex-col gap-4 border-emerald sm:flex-row sm:items-center sm:justify-between">
-      <div><p className="font-semibold">Create your first resume</p><p className="text-sm text-muted">Set up your base CV once, then tailor it to any job in a couple of clicks.</p></div>
-      <button className="btn-primary shrink-0" onClick={() => location.hash = "#onboarding"}><Sparkles size={16} /> Get started</button>
+// Friendly labels for the persisted tailoring-run stage, mirroring the wording
+// used in the popup so the in-progress hero reads consistently.
+const TAILORING_STAGE_LABELS: Record<string, string> = {
+  queued: "Queued…",
+  planning: "Planning evidence…",
+  writing: "Writing your CV…",
+  validating: "Checking factual support…",
+  critic: "Reviewing quality…",
+  repairing: "Repairing flagged content…",
+  completed: "Finishing up…"
+};
+
+// Compact "2 hours ago" / "3 days ago" style relative time for activity dates,
+// falling back to an absolute date for anything older than a week.
+function relativeTime(iso: string): string {
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return "";
+  const diff = Date.now() - then;
+  const mins = Math.round(diff / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins} min${mins === 1 ? "" : "s"} ago`;
+  const hours = Math.round(mins / 60);
+  if (hours < 24) return `${hours} hour${hours === 1 ? "" : "s"} ago`;
+  const days = Math.round(hours / 24);
+  if (days <= 7) return `${days} day${days === 1 ? "" : "s"} ago`;
+  return new Date(iso).toLocaleDateString();
+}
+
+// Visual treatment for each application lifecycle status, used by the status
+// badge/dropdown in the home table.
+const STATUS_META: Record<ApplicationStatus, { label: string; cls: string; dot: string }> = {
+  "not-sent": { label: "Not sent", cls: "bg-soft text-muted ring-1 ring-line", dot: "bg-slate-400" },
+  sent: { label: "Sent", cls: "bg-mint text-deep", dot: "bg-deep" },
+  replied: { label: "Replied", cls: "bg-emerald text-white", dot: "bg-white" }
+};
+const STATUS_ORDER: ApplicationStatus[] = ["not-sent", "sent", "replied"];
+
+// Stable per-company tint for the row monogram tile, so a long list reads as a
+// varied-but-controlled palette instead of a wall of identical green.
+const MONO_TINTS = [
+  "bg-emerald/15 text-deep", "bg-sky-100 text-sky-700", "bg-amber-100 text-amber-800",
+  "bg-violet-100 text-violet-700", "bg-rose-100 text-rose-700", "bg-teal-100 text-teal-800"
+];
+function monoTint(seed: string) {
+  let h = 0;
+  for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) >>> 0;
+  return MONO_TINTS[h % MONO_TINTS.length];
+}
+function monoInitials(title: string, company: string) {
+  const src = (company || title || "?").trim();
+  const parts = src.split(/\s+/).filter(Boolean);
+  const raw = parts.length >= 2 ? `${parts[0]![0]}${parts[1]![0]}` : src.slice(0, 2);
+  return (raw || "?").toUpperCase();
+}
+
+// A band label for how complete/strong a tailored CV reads, reusing the same
+// completeness engine as the sidebar so the table and editor agree.
+function strengthBand(cv: TailoredCv): string {
+  const { score } = evaluateResume(cv, "tailored", []);
+  return score >= 85 ? "Strong" : score >= 60 ? "Good" : "Needs work";
+}
+
+// Minimal click-away dropdown. The trigger is a styled button; `children` is a
+// render prop receiving a `close` callback so items can dismiss the menu.
+function Menu({ label, className, align = "right", children }: {
+  label: React.ReactNode;
+  className?: string;
+  align?: "left" | "right";
+  children: (close: () => void) => React.ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  return <div className="relative inline-block">
+    <button type="button" className={className} onClick={() => setOpen((o) => !o)}>{label}</button>
+    {open && <>
+      <button type="button" tabIndex={-1} aria-hidden className="fixed inset-0 z-20 cursor-default" onClick={() => setOpen(false)} />
+      <div className={`absolute z-30 mt-1 min-w-44 rounded-xl border border-line bg-white p-1 text-left shadow-lg ${align === "right" ? "right-0" : "left-0"}`}>
+        {children(() => setOpen(false))}
+      </div>
+    </>}
+  </div>;
+}
+
+const MENU_ITEM = "flex w-full items-center gap-2 rounded-lg px-3 py-1.5 text-left text-sm hover:bg-soft";
+
+// First name for the personal greeting. Prefers the signed-in account name, then
+// the base-profile contact name, then a friendly fallback so Home never greets a
+// blank.
+function firstName(state: StorageState): string {
+  const full = (state.auth?.name || state.profile?.contact?.name || "").trim();
+  return full ? full.split(/\s+/)[0]! : "there";
+}
+
+// Time-of-day greeting, evaluated once per render. Kept tiny so it reads cleanly
+// in the hero alongside the name.
+function greeting(): string {
+  const h = new Date().getHours();
+  return h < 12 ? "Good morning" : h < 18 ? "Good afternoon" : "Good evening";
+}
+
+function Home({ state, onChange: _onChange }: { state: StorageState; onChange: (s: StorageState) => void }) {
+  const [usage, setUsage] = useState<{ total: number; byAction: Record<string, number> } | null>(null);
+  useEffect(() => {
+    api.usage(state.settings.apiBaseUrl, state.settings.aiProvider).then(setUsage).catch(() => setUsage(null));
+  }, []);
+
+  const recent = useMemo(() => [...state.applications]
+    .sort((a, b) => (b.updatedAt || b.createdAt).localeCompare(a.updatedAt || a.createdAt)), [state.applications]);
+
+  // Base-resume health: reuse the same engine the sidebar uses, but only surface
+  // it on Home when there are still outstanding suggestions.
+  const health = useMemo(
+    () => (state.profile ? evaluateResume(state.profile, "base", state.profile.dismissedChecks ?? []) : null),
+    [state.profile]
+  );
+  const topCheck = health?.checks[0];
+
+  const job = state.tailoringJob;
+  const activeRun = job && (job.status === "running" || job.status === "error") ? job : null;
+  // When no run is mid-flight, the most-recently-touched application becomes the
+  // "continue editing" hero. It's then excluded from the recent list so it isn't
+  // shown twice.
+  const continueRecord = !activeRun ? recent[0] : undefined;
+  const listRecords = (continueRecord ? recent.slice(1) : recent).slice(0, 3);
+
+  const tailoredThisMonth = usage?.byAction.tailor ?? 0;
+  const sentCount = state.applications.filter((a) => a.status !== "not-sent").length;
+  const repliedCount = state.applications.filter((a) => a.status === "replied").length;
+  const hasApps = state.applications.length > 0;
+
+  const subline = !state.profile ? "Let's set up your base resume to get started."
+    : activeRun?.status === "running" ? "We're tailoring your resume right now."
+    : hasApps ? `${tailoredThisMonth} tailored this month — keep the momentum going.`
+    : "Open a job post and tailor your first resume.";
+
+  return <Shell title={`${greeting()}, ${firstName(state)} 👋`} eyebrow="Your launchpad">
+    <p className="home-rise -mt-3 mb-6 text-muted">{subline}</p>
+
+    {/* Smart primary action — one state-aware hero card. */}
+    <div className="home-rise mb-6">{
+      activeRun?.status === "running"
+      ? <div className="card border-emerald bg-mint/30 !p-6">
+          <p className="text-xs font-semibold uppercase tracking-[.1em] text-emerald">Tailoring in progress</p>
+          <div className="mt-1 flex items-center gap-2"><LoaderCircle size={20} className="animate-spin text-deep" /><h2 className="font-display text-xl font-bold text-deep">{TAILORING_STAGE_LABELS[activeRun.stage] || "Working on your CV…"}</h2></div>
+          <div className="mt-4 h-2 w-full overflow-hidden rounded-full bg-white/70"><div className="h-full rounded-full bg-emerald transition-all" style={{ width: `${Math.max(5, activeRun.progress)}%` }} /></div>
+          {!!activeRun.cvId && <button className="btn-secondary mt-5 !bg-white" onClick={() => { location.hash = `#editor/${activeRun.cvId}`; }}><FilePenLine size={15} /> Open draft</button>}
+        </div>
+      : activeRun?.status === "error"
+      ? <div className="rounded-2xl border border-amber-300 bg-amber-50 p-6 text-amber-950">
+          <div className="flex gap-2 font-semibold"><AlertTriangle size={18} /> Last tailoring didn't finish</div>
+          <p className="mt-1 text-sm">{activeRun.error || "Something interrupted the last run. Reopen the job from the extension to try again."}</p>
+          {!!activeRun.cvId && <button className="btn-secondary mt-4 !bg-white" onClick={() => { location.hash = `#editor/${activeRun.cvId}`; }}><FilePenLine size={15} /> Open last draft</button>}
+        </div>
+      : !state.profile
+      ? <div className="card flex flex-col gap-4 border-emerald bg-mint/30 !p-6 sm:flex-row sm:items-center sm:justify-between">
+          <div><p className="font-display text-xl font-bold text-deep">Create your base resume</p><p className="mt-1 text-sm text-muted">Set it up once, then tailor it to any job in a couple of clicks.</p></div>
+          <button className="btn-primary shrink-0" onClick={() => location.hash = "#onboarding"}><Sparkles size={16} /> Get started</button>
+        </div>
+      : continueRecord
+      ? <div className="card flex flex-col gap-4 border-emerald bg-mint/30 !p-6 sm:flex-row sm:items-center sm:justify-between">
+          <div className="min-w-0">
+            <p className="text-xs font-semibold uppercase tracking-[.1em] text-emerald">Pick up where you left off</p>
+            <h2 className="mt-1 truncate font-display text-xl font-bold">{continueRecord.job.title || "Untitled job"}</h2>
+            <p className="text-sm text-muted">{continueRecord.job.company || "Unknown company"} · edited {relativeTime(continueRecord.updatedAt || continueRecord.createdAt)}</p>
+          </div>
+          <button className="btn-primary shrink-0" onClick={() => { location.hash = `#editor/${continueRecord.tailoredCv.id}`; }}><FilePenLine size={16} /> Continue editing</button>
+        </div>
+      : <div className="card flex flex-col gap-4 border-emerald bg-mint/30 !p-6 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex items-start gap-3">
+            <span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-white text-emerald"><MousePointerClick size={18} /></span>
+            <div><p className="font-display text-xl font-bold text-deep">Tailor your next application</p><p className="mt-1 text-sm text-muted">Click the Fyxor icon on any job post, then send the offer here. LinkedIn jobs are detected automatically.</p></div>
+          </div>
+        </div>
+    }</div>
+
+    {/* At-a-glance summary — numbers only; management lives in Applications. */}
+    {hasApps && <div className="home-rise mb-6 grid gap-4 sm:grid-cols-3">
+      <div className="card">
+        <div className="flex items-center gap-2 text-sm text-muted"><Sparkles size={15} className="text-emerald" /> Tailored this month</div>
+        <p className="mt-2 font-display text-3xl font-bold">{tailoredThisMonth}</p>
+        <p className="mt-1 text-xs text-muted">{state.applications.length} total in your tracker</p>
+      </div>
+      <div className="card">
+        <div className="flex items-center gap-2 text-sm text-muted"><Send size={15} className="text-emerald" /> Sent</div>
+        <p className="mt-2 font-display text-3xl font-bold">{sentCount}</p>
+        <p className="mt-1 text-xs text-muted">of {state.applications.length} tailored</p>
+      </div>
+      <div className="card">
+        <div className="flex items-center gap-2 text-sm text-muted"><Reply size={15} className="text-emerald" /> Replied</div>
+        <p className="mt-2 font-display text-3xl font-bold">{repliedCount}</p>
+        <p className="mt-1 text-xs text-muted">{sentCount ? `${Math.round((repliedCount / sentCount) * 100)}% of sent` : "no replies yet"}</p>
+      </div>
     </div>}
-    <div className="mb-3 flex items-center justify-between">
-      <h2 className="section-title">Recently tailored</h2>
-      {!!state.applications.length && <button className="btn-secondary !px-3 !py-1.5 text-sm" onClick={() => location.hash = "#applications"}>View all <ArrowRight size={14} /></button>}
-    </div>
-    {!recent.length ? <EmptyApplications extra={!state.profile ? "Start by creating your base resume above." : undefined} /> :
-    <div className="grid content-start gap-4">{recent.map((record) => <div key={record.id} className="card flex flex-col gap-4 sm:flex-row sm:items-center">
-      <div className="min-w-0 flex-1"><h3 className="truncate font-display text-lg font-bold">{record.job.title || "Untitled job"}</h3><p className="text-sm text-muted">{record.job.company || "Unknown company"} · {new Date(record.createdAt).toLocaleDateString()}</p></div>
-      <button className="btn-primary shrink-0 !px-3" onClick={() => { location.hash = `#editor/${record.tailoredCv.id}`; }}><FilePenLine size={15} /> Open</button>
-    </div>)}</div>}
+
+    {/* Slim base-resume nudge — a pointer into Your Resume, not a duplicate of it. */}
+    {health && topCheck && <button onClick={() => { location.hash = "#resume"; }} className="home-rise mb-6 flex w-full items-center gap-3 rounded-2xl border border-amber-300 bg-amber-50 px-4 py-3 text-left text-amber-950 transition hover:bg-amber-100">
+      <Lightbulb size={18} className="shrink-0" />
+      <span className="min-w-0 flex-1 truncate text-sm font-medium">Your base resume could be stronger — {topCheck.label}</span>
+      <span className="shrink-0 rounded-full bg-white px-2.5 py-0.5 text-sm font-bold">{health.score}/100</span>
+      <ArrowRight size={16} className="shrink-0" />
+    </button>}
+
+    {/* Recent activity — a read-only peek that links into Applications. */}
+    {hasApps && <>
+      <div className="mb-3 flex items-center justify-between">
+        <h2 className="section-title">Recent activity</h2>
+        <button className="inline-flex items-center gap-1 text-sm font-semibold text-emerald hover:text-deep" onClick={() => location.hash = "#applications"}>View all in Applications <ArrowRight size={14} /></button>
+      </div>
+      {!listRecords.length ? <EmptyApplications /> :
+      <div className="home-rise card !p-0">
+        {listRecords.map((record) => (
+          <button key={record.id} onClick={() => { location.hash = `#editor/${record.tailoredCv.id}`; }}
+            className="tracker-row flex w-full items-center gap-3 border-b border-line px-4 py-3 text-left transition last:border-0 hover:bg-soft/40">
+            <span className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl text-xs font-bold ${monoTint(record.job.company || record.job.title || record.id)}`}>{monoInitials(record.job.title, record.job.company)}</span>
+            <span className="min-w-0 flex-1">
+              <span className="block truncate font-semibold">{record.job.title || "Untitled job"}{record.job.company ? <span className="font-normal text-muted"> at {record.job.company}</span> : ""}</span>
+              <span className="mt-0.5 block text-xs text-muted">{relativeTime(record.updatedAt || record.createdAt)} · {strengthBand(record.tailoredCv)}</span>
+            </span>
+            <ArrowRight size={16} className="shrink-0 text-muted" />
+          </button>
+        ))}
+      </div>}
+    </>}
   </Shell>;
 }
 
@@ -620,11 +1051,17 @@ function ResumeView({ state, onChange }: { state: StorageState; onChange: (s: St
     <div className="card py-16 text-center"><FileText className="mx-auto text-emerald" size={32} /><h2 className="mt-4 section-title">You don't have a resume yet</h2><p className="mx-auto mt-2 max-w-md text-sm text-muted">Create your base CV once — upload a file or build it step by step. It becomes the source for every tailored application.</p><button className="btn-primary mt-6" onClick={() => location.hash = "#onboarding"}><Sparkles size={16} /> Create your resume</button></div>
   </Shell>;
 
+  const evidenceGaps = missingStructuredProfileEvidence(profile);
   return <Shell title="Your resume">
+    {!!evidenceGaps.length && <div className="mb-5 rounded-2xl border border-amber-300 bg-amber-50 p-4 text-amber-950">
+      <div className="flex gap-2 font-semibold"><AlertTriangle size={18} /> Some source details need a quick profile update</div>
+      <p className="mt-1 text-sm">Your original CV appears to mention {evidenceGaps.join(" and ")}, but those fields are empty in the structured profile. Add them once so every tailored resume can preserve them.</p>
+      <button className="btn-secondary mt-3 !bg-white" onClick={() => { location.hash = "#onboarding/evidence"; }}>Update certifications and languages</button>
+    </div>}
     <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,300px)]">
       <div>
         <FirstEditHint state={state} onChange={onChange} />
-        <div className="rounded-2xl bg-soft p-3 ring-1 ring-line sm:p-6"><CvDocument cv={profile} headline={profile.targetRole} editable onChange={(next) => { setProfile({ ...profile, ...(next as Partial<BaseProfile>) }); markEdited.editing(); }} onCommitHeadline={(v) => { setProfile({ ...profile, targetRole: v.trim() }); markEdited.editing(); }} /></div>
+        <div className="your-resume-canvas rounded-2xl bg-soft p-3 ring-1 ring-line sm:p-6"><CvDocument cv={profile} headline={profile.targetRole} editable onChange={(next) => { setProfile({ ...profile, ...(next as Partial<BaseProfile>) }); markEdited.editing(); }} onCommitHeadline={(v) => { setProfile({ ...profile, targetRole: v.trim() }); markEdited.editing(); }} /></div>
       </div>
       <aside className="space-y-4 lg:sticky lg:top-24 lg:self-start">
         <InlineEditHint saveState={saveState}>Click any line to rewrite it. Changes save to your base resume.</InlineEditHint>
@@ -637,12 +1074,45 @@ function ResumeView({ state, onChange }: { state: StorageState; onChange: (s: St
   </Shell>;
 }
 
+const TRACKER_FILTERS: { key: "all" | ApplicationStatus; label: string }[] = [
+  { key: "all", label: "All" }, { key: "not-sent", label: "Not sent" },
+  { key: "sent", label: "Sent" }, { key: "replied", label: "Replied" }
+];
+
 function Tracker({ state, onChange }: { state: StorageState; onChange: (s: StorageState) => void }) {
-  const [selectedId, setSelectedId] = useState(state.applications[0]?.id || "");
   const [confirmingId, setConfirmingId] = useState("");
+  const [filter, setFilter] = useState<"all" | ApplicationStatus>("all");
+  const [toast, setToast] = useState<{ label: string; cls: string; dot: string; key: number } | null>(null);
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Most-recently-touched first, matching the ordering Home uses for its table.
+  const records = useMemo(() => [...state.applications]
+    .sort((a, b) => (b.updatedAt || b.createdAt).localeCompare(a.updatedAt || a.createdAt)), [state.applications]);
+  const counts = useMemo(() => ({
+    all: records.length,
+    "not-sent": records.filter((r) => r.status === "not-sent").length,
+    sent: records.filter((r) => r.status === "sent").length,
+    replied: records.filter((r) => r.status === "replied").length
+  }), [records]);
+  const visible = filter === "all" ? records : records.filter((r) => r.status === filter);
+
+  // Status changes are a deliberate user action, not an edit — keep updatedAt
+  // untouched so "last edited" / continue-editing stays meaningful.
+  async function setStatus(id: string, status: ApplicationStatus) {
+    onChange(await updateState((s) => ({ ...s, applications: s.applications.map((a) => (a.id === id ? { ...a, status } : a)) })));
+    const meta = STATUS_META[status];
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    setToast({ ...meta, key: Date.now() });
+    toastTimer.current = setTimeout(() => setToast(null), 2500);
+  }
+  async function duplicate(record: ApplicationRecord) {
+    const cv = { ...record.tailoredCv, id: makeId("cv"), createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+    const copy = { ...record, id: makeId("application"), tailoredCv: cv, status: "not-sent" as const, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+    onChange(await updateState((s) => ({ ...s, drafts: { ...s.drafts, [cv.id]: cv }, applications: [copy, ...s.applications] })));
+  }
   async function remove(id: string) {
     setConfirmingId("");
-    const next = await updateState((s) => {
+    onChange(await updateState((s) => {
       const removed = s.applications.find((a) => a.id === id);
       // Also drop the orphaned draft so deleted CVs don't accumulate in storage
       // (and get pushed to the cloud) forever. Drafts aren't shared between
@@ -650,49 +1120,81 @@ function Tracker({ state, onChange }: { state: StorageState; onChange: (s: Stora
       const drafts = { ...s.drafts };
       if (removed) delete drafts[removed.tailoredCv.id];
       return { ...s, drafts, applications: s.applications.filter((a) => a.id !== id) };
-    });
-    onChange(next);
-    if (id === selectedId) setSelectedId(next.applications[0]?.id || "");
+    }));
   }
-  async function duplicate(record: ApplicationRecord) {
-    const cv = { ...record.tailoredCv, id: makeId("cv"), createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
-    const copy = { ...record, id: makeId("application"), tailoredCv: cv, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
-    const next = await updateState((s) => ({ ...s, drafts: { ...s.drafts, [cv.id]: cv }, applications: [copy, ...s.applications] }));
-    onChange(next);
-    setSelectedId(copy.id);
+  async function exportRecord(record: ApplicationRecord, format: "pdf" | "docx") {
+    if (!state.profile) return;
+    try { downloadBlob(await api.export(state.settings.apiBaseUrl, state.settings.aiProvider, state.profile, record.tailoredCv, format), `${record.job.company || "tailored"}-${record.job.title || "cv"}.${format}`); }
+    catch (e) { await handleAuthExpiry(e, onChange); }
   }
-  const selected = state.applications.find((a) => a.id === selectedId) || state.applications[0];
-  const stop = (fn: () => void) => (e: React.MouseEvent) => { e.stopPropagation(); fn(); };
 
-  return <Shell title="Applications">
+  return <Shell title="Applications" eyebrow="Track every role you've tailored for">
     {!state.settings.onboardingComplete && <div className="mb-5 card flex items-center justify-between"><div><p className="font-semibold">Complete your base profile</p><p className="text-sm text-muted">Tailoring needs verified source experience.</p></div><button className="btn-primary" onClick={() => location.hash = "#onboarding"}>Start onboarding</button></div>}
-    {!state.applications.length ? <EmptyApplications /> :
-    <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,480px)]">
-      <div className="grid content-start gap-4">{state.applications.map((record) => <div role="button" tabIndex={0} onClick={() => setSelectedId(record.id)} onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setSelectedId(record.id); } }} className={`card flex cursor-pointer flex-col gap-4 transition sm:flex-row sm:items-center ${record.id === selected?.id ? "ring-2 ring-emerald" : "hover:border-emerald"}`} key={record.id}><div className="min-w-0 flex-1"><h2 className="truncate font-display text-lg font-bold">{record.job.title || "Untitled job"}</h2><p className="text-sm text-muted">{record.job.company || "Unknown company"} · {new Date(record.createdAt).toLocaleDateString()}</p></div>{confirmingId === record.id ? <div className="flex items-center gap-2"><span className="text-sm font-medium text-red-600">Delete?</span><button className="btn-secondary !px-3 text-red-600" onClick={stop(() => remove(record.id))}><Trash2 size={15} /> Confirm</button><button className="btn-secondary !px-3" onClick={stop(() => setConfirmingId(""))}>Cancel</button></div> : <div className="flex gap-2"><button className="btn-primary !px-3" onClick={stop(() => { location.hash = `#editor/${record.tailoredCv.id}`; })}><FilePenLine size={15} /> Open</button><button className="btn-secondary !px-3" aria-label="Duplicate" onClick={stop(() => duplicate(record))}><Plus size={15} /></button><button className="btn-secondary !px-3 text-red-600" aria-label="Delete" onClick={stop(() => setConfirmingId(record.id))}><Trash2 size={15} /></button></div>}</div>)}</div>
-      <aside className="space-y-3 lg:sticky lg:top-24 lg:self-start">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted"><FileText size={14} /> Resume preview</div>
-          {selected && <button className="btn-secondary !px-3 !py-1.5 text-sm" onClick={() => { location.hash = `#editor/${selected.tailoredCv.id}`; }}><FilePenLine size={14} /> Edit</button>}
+    {!records.length ? <EmptyApplications /> : <>
+      <div className="card overflow-hidden !p-0">
+        <div className="flex items-center gap-1.5 overflow-x-auto border-b border-line px-3 py-2.5 sm:px-4">
+          {TRACKER_FILTERS.map(({ key, label }) => {
+            const on = filter === key;
+            return <button key={key} onClick={() => setFilter(key)} className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-3 py-1.5 text-sm font-semibold transition ${on ? "bg-deep text-white" : "text-muted hover:bg-soft hover:text-ink"}`}>
+              {label}<span className={`rounded-full px-1.5 text-xs font-bold tabular-nums ${on ? "bg-white/20" : "bg-soft text-muted"}`}>{counts[key]}</span>
+            </button>;
+          })}
         </div>
-        {selected ? <div className="max-h-[calc(100vh-12rem)] overflow-y-auto rounded-2xl bg-soft p-3 ring-1 ring-line"><CvDocument cv={selected.tailoredCv} /></div>
-          : <div className="card py-12 text-center text-sm text-muted">Select an application to preview its tailored resume.</div>}
-      </aside>
-    </div>}
+
+        {!visible.length ? <div className="px-5 py-14 text-center text-sm text-muted">No applications with this status yet.</div> :
+        visible.map((record) => {
+          const meta = STATUS_META[record.status];
+          return <div key={record.id} className="tracker-row flex flex-col gap-3 border-b border-line px-4 py-4 transition last:border-0 hover:bg-soft/50 sm:flex-row sm:items-center sm:gap-4 sm:px-5">
+            <button className="min-w-0 flex-1 text-left" onClick={() => { location.hash = `#editor/${record.tailoredCv.id}`; }}>
+              <span className="block truncate font-semibold">{record.job.title || "Untitled job"}{record.job.company ? <span className="font-normal text-muted"> · {record.job.company}</span> : ""}</span>
+              <span className="mt-0.5 block truncate text-xs text-muted">{relativeTime(record.updatedAt || record.createdAt)} · {strengthBand(record.tailoredCv)}</span>
+            </button>
+            <div className="shrink-0 sm:w-28">
+              <Menu align="left" className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold ${meta.cls}`} label={<><span className={`h-1.5 w-1.5 rounded-full ${meta.dot}`} />{meta.label}<ChevronDown size={12} /></>}>
+                {(close) => STATUS_ORDER.map((s) => <button key={s} className={MENU_ITEM} onClick={() => { setStatus(record.id, s); close(); }}>
+                  {record.status === s ? <Check size={14} className="text-emerald" /> : <span className="w-3.5" />}<span className={`h-1.5 w-1.5 rounded-full ${STATUS_META[s].dot} ${s === "replied" ? "ring-1 ring-emerald" : ""}`} />{STATUS_META[s].label}
+                </button>)}
+              </Menu>
+            </div>
+            <div className="flex items-center gap-2 sm:w-auto sm:justify-end">
+              {confirmingId === record.id ? <>
+                <span className="text-xs font-medium text-red-600">Delete?</span>
+                <button className="btn-secondary !px-2.5 !py-1 text-xs text-red-600" onClick={() => remove(record.id)}>Confirm</button>
+                <button className="btn-secondary !px-2.5 !py-1 text-xs" onClick={() => setConfirmingId("")}>Cancel</button>
+              </> : <>
+                <button className="btn-secondary !px-2.5 !py-1.5 text-xs disabled:cursor-not-allowed disabled:opacity-50" disabled={!record.job.url} title={record.job.url ? "Open the job listing" : "No job link saved"} onClick={() => window.open(record.job.url, "_blank", "noopener")}><ExternalLink size={13} /> View job</button>
+                <button className="btn-primary !px-2.5 !py-1.5 text-xs" onClick={() => { location.hash = `#editor/${record.tailoredCv.id}`; }}><FilePenLine size={13} /> See resume</button>
+                <Menu className="btn-secondary !px-2 !py-1.5" label={<MoreVertical size={15} />}>
+                  {(close) => <>
+                    <button className={MENU_ITEM} onClick={() => { duplicate(record); close(); }}><Copy size={14} /> Duplicate</button>
+                    <button className={MENU_ITEM} onClick={() => { exportRecord(record, "pdf"); close(); }}><Download size={14} /> Export PDF</button>
+                    <button className={MENU_ITEM} onClick={() => { exportRecord(record, "docx"); close(); }}><Download size={14} /> Export DOCX</button>
+                    <button className={`${MENU_ITEM} text-red-600`} onClick={() => { setConfirmingId(record.id); close(); }}><Trash2 size={14} /> Delete</button>
+                  </>}
+                </Menu>
+              </>}
+            </div>
+          </div>;
+        })}
+      </div>
+    </>}
+
+    {toast && (
+      <div key={toast.key} className="fixed bottom-6 right-6 z-50 flex items-center gap-2.5 rounded-2xl border border-line bg-white px-4 py-3 shadow-lg animate-toast">
+        <span className={`h-2 w-2 shrink-0 rounded-full ${toast.dot} ${toast.label === "Replied" ? "ring-1 ring-emerald" : ""}`} />
+        <span className="text-sm font-semibold text-ink">Marked as <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-bold ${toast.cls}`}>{toast.label}</span></span>
+      </div>
+    )}
   </Shell>;
 }
 
-function Account({ state, onChange, syncState }: { state: StorageState; onChange: (s: StorageState) => void; syncState: SyncState }) {
+function Account({ state, onChange }: { state: StorageState; onChange: (s: StorageState) => void }) {
   const [apiBaseUrl, setApiBaseUrl] = useState(state.settings.apiBaseUrl);
   const [aiProvider, setAiProvider] = useState(state.settings.aiProvider);
-  const [tailoringEngine, setTailoringEngine] = useState<TailoringEngine>(state.settings.tailoringEngine);
-  const [cccAvailable, setCccAvailable] = useState(false);
   const [health, setHealth] = useState("");
-  const [usage, setUsage] = useState<{ total: number; byAction: Record<string, number> } | null>(null);
   const [signingOut, setSigningOut] = useState(false);
-  useEffect(() => {
-    api.health(state.settings.apiBaseUrl, state.settings.aiProvider).then((result) => setCccAvailable(Boolean(result.ccc?.available))).catch(() => setCccAvailable(false));
-    api.usage(state.settings.apiBaseUrl, state.settings.aiProvider).then(setUsage).catch(() => setUsage(null));
-  }, []);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   async function signOut() {
     setSigningOut(true);
     try {
@@ -702,57 +1204,55 @@ function Account({ state, onChange, syncState }: { state: StorageState; onChange
       location.hash = "#home";
     } finally { setSigningOut(false); }
   }
-  async function save() {
-    const next = { ...state, settings: { ...state.settings, apiBaseUrl, aiProvider, tailoringEngine } }; await setState(next); onChange(next); setHealth("Settings saved. New AI requests will use the selected provider.");
+  // Frontend-only "delete account": there is no server-side deletion endpoint, so
+  // we best-effort end the session and wipe everything stored on this device.
+  async function deleteAccount() {
+    setDeleting(true);
+    try {
+      if (state.auth) await authClient.signOut(state.settings.apiBaseUrl, state.auth.token).catch(() => undefined);
+      const next = emptyStorageState();
+      await setState(next);
+      onChange(next);
+      location.hash = "#home";
+    } finally { setDeleting(false); }
   }
-  async function setLanguage(outputLanguage: "en" | "pl") {
-    const next = await updateState((s) => (s.profile ? { ...s, profile: { ...s.profile, outputLanguage, updatedAt: new Date().toISOString() } } : s));
-    onChange(next);
+  async function save() {
+    const next = { ...state, settings: { ...state.settings, apiBaseUrl, aiProvider, tailoringEngine: "builtin" as const } }; await setState(next); onChange(next); setHealth("Settings saved. New AI requests will use the selected provider.");
   }
   async function check() {
     setHealth("Checking…");
-    try { const result = await api.health(apiBaseUrl, aiProvider); setCccAvailable(Boolean(result.ccc?.available)); setHealth(result.configured ? `Connected · ${result.provider} · ${result.model}${result.ccc?.available ? " · CCC engine ready" : ""}` : "Local server connected, but OPENAI_API_KEY is missing."); }
+    try { const result = await api.health(apiBaseUrl, aiProvider); setHealth(result.configured ? `Connected · ${result.provider} · ${result.model} · unified evidence pipeline` : "Local server connected, but the selected provider is not configured."); }
     catch (e) { if (!(await handleAuthExpiry(e, onChange))) setHealth((e as Error).message); }
   }
-  return <Shell title="Account & settings">
-    <div className="grid gap-5 lg:grid-cols-2">
+  return <Shell title="Account">
+    <div className="mx-auto grid max-w-xl gap-5">
       <div className="card">
-        <h2 className="section-title">Base profile</h2>
-        {state.profile ? <>
-          <p className="mt-3 font-semibold">{state.profile.contact.name || "Unnamed profile"}</p>
-          <p className="text-sm text-muted">{state.profile.targetRole || "No target role"} · {state.profile.experiences.length} roles · {state.profile.skills.length} skills</p>
-          <div className="mt-5 flex gap-2">
-            <button className="btn-primary" onClick={() => location.hash = "#resume"}><FilePenLine size={16} /> Edit resume</button>
-            <button className="btn-secondary" onClick={() => location.hash = "#onboarding"}><PenLine size={16} /> Guided setup</button>
-          </div>
-          <label className="mt-4 block"><span className="label">Output language</span>
-            <select className="field" value={state.profile.outputLanguage} onChange={(e) => setLanguage(e.target.value as "en" | "pl")}><option value="en">English</option><option value="pl">Polish</option></select>
-            <span className="mt-1 block text-xs text-muted">Default language for tailored CVs.</span>
-          </label>
-        </> : <button className="btn-primary mt-5" onClick={() => location.hash = "#onboarding"}>Create profile</button>}
+        <div><span className="label">Name</span><p className="text-sm font-semibold">{state.auth?.name || "—"}</p></div>
+        <div className="mt-4"><span className="label">Email</span><p className="text-sm">{state.auth?.email || "—"}</p></div>
+
+        <div className="mt-5 border-t border-line pt-5">
+          <button className="btn-secondary" onClick={signOut} disabled={signingOut}><LogOut size={16} /> {signingOut ? "Signing out…" : "Sign out"}</button>
+        </div>
       </div>
 
-      <div className="card">
-        <h2 className="section-title">Account</h2>
-        <div className="mt-3 flex items-center gap-2 text-sm"><User size={16} className="text-emerald" /><span className="font-semibold">{state.auth?.name || "Signed in"}</span></div>
-        <div className="mt-1 flex items-center gap-2 text-sm text-muted"><Mail size={16} /><span>{state.auth?.email || ""}</span></div>
-        <SyncIndicator state={syncState} />
-        {usage && <p className="mt-3 text-xs text-muted">This month: {usage.byAction.tailor || 0} tailored · {usage.total} AI actions total.</p>}
-        <button className="btn-secondary mt-4" onClick={signOut} disabled={signingOut}><LogOut size={16} /> {signingOut ? "Signing out…" : "Sign out"}</button>
+      <div className="card border-red-200">
+        <h2 className="section-title text-red-700">Delete account</h2>
+        <p className="mt-1 text-sm text-muted">Permanently removes your data from this device and signs you out.</p>
+        {confirmingDelete ? <div className="mt-4 flex items-center gap-2">
+          <span className="text-sm font-medium text-red-600">Delete account?</span>
+          <button className="btn-secondary text-red-600" onClick={deleteAccount} disabled={deleting}><Trash2 size={15} /> {deleting ? "Deleting…" : "Confirm"}</button>
+          <button className="btn-secondary" onClick={() => setConfirmingDelete(false)} disabled={deleting}>Cancel</button>
+        </div> : <button className="btn-secondary mt-4 border-red-200 text-red-600 hover:bg-red-50" onClick={() => setConfirmingDelete(true)}><Trash2 size={15} /> Delete account</button>}
       </div>
 
-      <details className="card group lg:col-span-2 [&_summary]:list-none">
+      <details className="card group [&_summary]:list-none">
         <summary className="flex cursor-pointer items-center justify-between">
-          <div><h2 className="section-title">Advanced settings</h2><p className="mt-1 text-sm text-muted">AI provider, tailoring engine, and the local server URL.</p></div>
+          <div><h2 className="section-title">Advanced settings</h2><p className="mt-1 text-sm text-muted">AI provider and the local server URL.</p></div>
           <ChevronDown size={18} className="text-muted transition-transform group-open:rotate-180" />
         </summary>
         <div className="mt-4 border-t border-line pt-4">
           <label className="block"><span className="label">Provider</span>
-            <select className="field" value={aiProvider} onChange={(e) => setAiProvider(e.target.value as "codex-local" | "openai-api" | "gemini-api")}><option value="gemini-api">Gemini API (recommended)</option><option value="openai-api">OpenAI API</option><option value="codex-local">Codex running on this machine</option></select>
-          </label>
-          <label className="mt-4 block"><span className="label">Tailoring engine</span>
-            <select className="field" value={tailoringEngine} onChange={(e) => setTailoringEngine(e.target.value as TailoringEngine)}><option value="ccc" disabled={!cccAvailable}>CCC studio engine{cccAvailable ? " (recommended)" : " — not detected"}</option><option value="builtin">Built-in (single pass)</option></select>
-            <span className="mt-1 block text-xs text-muted">{tailoringEngine === "ccc" ? (cccAvailable ? "Default. Runs the multi-step CCC pipeline — can take a few minutes per CV." : "CCC isn't detected on the server, so tailoring uses the built-in single pass until you set CCC_ENGINE_ROOT.") : "Fast single LLM pass via the selected provider."}</span>
+            <select className="field" value={aiProvider} onChange={(e) => setAiProvider(e.target.value as AiProvider)}><option value="groq-api">Groq API (recommended)</option><option value="gemini-api">Gemini API</option><option value="openai-api">OpenAI API</option><option value="codex-local">Codex running on this machine</option></select>
           </label>
           <label className="mt-4 block"><span className="label">Local server URL</span><input className="field" value={apiBaseUrl} onChange={(e) => setApiBaseUrl(e.target.value)} /></label>
           <div className="mt-4 flex gap-2">
@@ -767,33 +1267,34 @@ function Account({ state, onChange, syncState }: { state: StorageState; onChange
 }
 
 function Welcome({ state, onChange }: { state: StorageState; onChange: (s: StorageState) => void }) {
+  const [dragOver, setDragOver] = useState(false);
   useEffect(() => {
     if (state.settings.welcomeSeen) return;
     updateState((s) => ({ ...s, settings: { ...s.settings, welcomeSeen: true } })).then(onChange);
   }, []);
+  // Hand the chosen file to Onboarding (across the hash nav) so it auto-structures
+  // without asking the user to pick it a second time.
+  const handoff = (file?: File | null) => { if (!file) return; pendingUploadFile = file; location.hash = "#onboarding/upload"; };
   return (
     <div className="min-h-screen bg-soft">
-      <main className="mx-auto max-w-3xl px-4 py-12">
+      <main className="mx-auto max-w-2xl px-4 py-12">
         <div className="flex items-center gap-2.5"><Logo /><span className="font-display font-bold">Fyxor</span></div>
         <p className="mt-8 text-xs font-semibold uppercase tracking-[.1em] text-emerald">Welcome to Fyxor</p>
         <h1 className="mt-2 font-display text-3xl font-bold tracking-tight">You're one step from a CV that works.</h1>
-        <p className="mt-3 max-w-xl text-muted">Set up your base CV once. After that, tailor it to any job offer in a couple of clicks — honestly framed, never invented.</p>
-        <p className="mt-6 text-sm font-medium text-ink">How would you like to start?</p>
+        <p className="mt-3 max-w-xl text-muted">Drop in your résumé and we'll build your base CV in seconds. After that, tailor it to any job offer in a couple of clicks — honestly framed, never invented.</p>
 
-        <div className="mt-3 grid gap-4 sm:grid-cols-2">
-          <button className="card group text-left transition hover:border-emerald" onClick={() => { location.hash = "#onboarding/upload"; }}>
-            <span className="flex h-11 w-11 items-center justify-center rounded-xl bg-mint text-deep"><Upload size={20} /></span>
-            <h2 className="mt-4 section-title">Upload an existing file</h2>
-            <p className="mt-1 text-sm text-muted">Bring a PDF or DOCX résumé and we'll structure it for you.</p>
-            <span className="mt-4 inline-flex items-center gap-1.5 text-sm font-semibold text-emerald">Start <ArrowRight size={15} /></span>
-          </button>
-          <button className="card group text-left transition hover:border-emerald" onClick={() => { location.hash = "#onboarding/manual"; }}>
-            <span className="flex h-11 w-11 items-center justify-center rounded-xl bg-mint text-deep"><PenLine size={20} /></span>
-            <h2 className="mt-4 section-title">Use our resume creator</h2>
-            <p className="mt-1 text-sm text-muted">No file yet? Build your base CV step by step, from scratch.</p>
-            <span className="mt-4 inline-flex items-center gap-1.5 text-sm font-semibold text-emerald">Start <ArrowRight size={15} /></span>
-          </button>
-        </div>
+        <label
+          className={`onboarding-dropzone onboarding-dropzone-hero mt-7 ${dragOver ? "is-dragover" : ""}`}
+          onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+          onDragLeave={() => setDragOver(false)}
+          onDrop={(e) => { e.preventDefault(); setDragOver(false); handoff(e.dataTransfer.files?.[0]); }}>
+          <span className="flex h-12 w-12 items-center justify-center rounded-2xl bg-mint text-deep"><Upload size={24} /></span>
+          <span className="mt-3 font-display text-lg font-bold tracking-tight">Drop your résumé here</span>
+          <span className="mt-1 text-sm text-muted">or click to upload a PDF or DOCX — we'll structure it for you</span>
+          <input type="file" accept=".pdf,.docx" className="hidden" onChange={(e) => handoff(e.target.files?.[0])} />
+        </label>
+
+        <p className="mt-5 text-center text-sm text-muted">No résumé yet? <button className="font-semibold text-emerald hover:underline" onClick={() => { location.hash = "#onboarding/manual"; }}>Build it from scratch →</button></p>
       </main>
     </div>
   );
@@ -1060,10 +1561,18 @@ export function App() {
   if (!state.auth) return <Auth state={state} onChange={setAppState} />;
   if (hash === "#welcome") return <Welcome state={state} onChange={setAppState} />;
   if (hash === "#pin") return <PinScreen state={state} onChange={setAppState} />;
-  if (hash.startsWith("#onboarding")) return <Onboarding state={state} onChange={setAppState} initialMode={hash.split("/")[1] === "manual" ? "manual" : "upload"} />;
+  // Resume an interrupted setup: an unfinished profile with a saved onboarding step
+  // pulls the user back in rather than dropping them on a half-built home screen.
+  if (state.profile && !state.settings.onboardingComplete && state.settings.onboardingStep && !hash.startsWith("#onboarding")) {
+    location.hash = `#onboarding/${state.profile.rawText ? "upload" : "manual"}`;
+    return <div className="p-6"><Loading label="Resuming your setup…" /></div>;
+  }
+  if (hash.startsWith("#onboarding")) return <Onboarding state={state} onChange={setAppState}
+    initialMode={hash.split("/")[1] === "manual" ? "manual" : "upload"}
+    initialView={hash.split("/")[1] === "evidence" ? "extras" : undefined} />;
   if (hash === "#resume") return <ResumeView state={state} onChange={setAppState} />;
-  if (hash === "#account" || hash === "#profile") return <Account state={state} onChange={setAppState} syncState={syncState} />;
+  if (hash === "#account" || hash === "#profile") return <Account state={state} onChange={setAppState} />;
   if (hash === "#applications" || hash === "#tracker") return <Tracker state={state} onChange={setAppState} />;
   if (hash.startsWith("#editor/")) return <Editor state={state} cvId={hash.split("/")[1] || ""} onChange={setAppState} />;
-  return <Home state={state} />;
+  return <Home state={state} onChange={setAppState} />;
 }

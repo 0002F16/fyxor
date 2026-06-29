@@ -16,7 +16,6 @@ const profile: BaseProfile = {
   id: "profile-1",
   contact: { name: "Candidate", email: "", phone: "", location: "", linkedIn: "" },
   targetRole: "Software Developer",
-  outputLanguage: "en",
   summary: "",
   experiences: [
     {
@@ -51,17 +50,19 @@ const cv: TailoredCv = {
   id: "cv-1",
   baseProfileId: profile.id,
   job,
-  outputLanguage: "en",
   contact: profile.contact,
   summary: "",
+  summaryClaims: [],
   experiences: [
     {
       id: "tailored-1",
       company: "Acme",
       role: "Software Developer",
+      originalRole: "Software Developer",
+      titleEvidenceStatus: "unchanged",
       startDate: "2022",
       endDate: "2024",
-      bullets: ["Built Node.js APIs."],
+      bullets: [{ id: "b1", text: "Built Node.js APIs.", sourceBulletIndexes: [0], evidenceStatus: "verified" }],
       sourceExperienceId: "source-1",
       sourceBulletIndexes: [0]
     },
@@ -69,15 +70,18 @@ const cv: TailoredCv = {
       id: "tailored-2",
       company: "Studio",
       role: "UX Designer",
+      originalRole: "UX Designer",
+      titleEvidenceStatus: "unchanged",
       startDate: "2020",
       endDate: "2022",
-      bullets: ["Designed product workflows."],
+      bullets: [{ id: "b2", text: "Designed product workflows.", sourceBulletIndexes: [0], evidenceStatus: "verified" }],
       sourceExperienceId: "source-2",
       sourceBulletIndexes: [0]
     }
   ],
   education: [],
   skills: [],
+  skillEvidence: [],
   skillCategories: {},
   certifications: [],
   languages: [],
@@ -85,6 +89,8 @@ const cv: TailoredCv = {
   style: { preset: "modern" },
   dismissedChecks: [],
   unsupportedClaims: [],
+  pipeline: { pipelineVersion: "test", runId: "", provider: "", model: "", stages: [], aiCallCount: 0, repairCount: 0 },
+  readiness: "ready",
   createdAt: now,
   updatedAt: now
 };

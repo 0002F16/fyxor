@@ -2,9 +2,11 @@ import { z } from "zod";
 import {
   baseProfileSchema,
   contactSchema,
+  evidencePlanSchema,
   experienceSchema,
   jobDescriptionSchema,
-  outputLanguageSchema,
+  projectSchema,
+  summaryEvidenceReferenceSchema,
   tailoredCvSchema,
   tailoredExperienceSchema,
   unsupportedClaimSchema
@@ -23,8 +25,7 @@ export const llmEducationSchema = z.object({
 });
 
 export const extractRequestSchema = z.object({
-  text: z.string().min(30),
-  outputLanguage: outputLanguageSchema.default("en")
+  text: z.string().min(30)
 });
 export const tailorRequestSchema = z.object({
   profile: baseProfileSchema,
@@ -32,6 +33,7 @@ export const tailorRequestSchema = z.object({
 });
 
 export const exportRequestSchema = z.object({
+  profile: baseProfileSchema,
   cv: tailoredCvSchema
 });
 
@@ -54,18 +56,80 @@ export const llmExperienceTitleReviewSchema = z.object({
   }))
 });
 
+export const llmEvidencePlanSchema = evidencePlanSchema;
+
+export const llmResumeWriterSchema = z.object({
+  summary: z.string(),
+  summaryClaims: z.array(z.object({
+    id: z.string(),
+    text: z.string(),
+    evidence: z.array(summaryEvidenceReferenceSchema),
+    requirementIds: z.array(z.string()).optional(),
+    provenance: z.enum(["explicit", "equivalent", "inferred-context"]).optional()
+  })),
+  roles: z.array(z.object({
+    sourceExperienceId: z.string(),
+    displayTitle: z.string(),
+    bullets: z.array(z.object({
+      id: z.string(),
+      text: z.string(),
+      sourceBulletIndexes: z.array(z.number().int().nonnegative())
+    }))
+  })),
+  skillCategories: z.array(z.object({
+    name: z.string(),
+    skills: z.array(z.string())
+  })),
+  skillEvidence: z.array(z.object({
+    skill: z.string(),
+    evidence: z.array(z.object({
+      sourceExperienceId: z.string(),
+      sourceBulletIndexes: z.array(z.number().int().nonnegative())
+    })),
+    provenance: z.enum(["explicit", "equivalent", "inferred-baseline"]).default("explicit"),
+    sourceSkills: z.array(z.string()).default([]),
+    requirementIds: z.array(z.string()).default([])
+  })),
+  certifications: z.array(z.string())
+});
+
+export const llmCriticSchema = z.object({
+  scores: z.object({
+    relevance: z.number().min(1).max(5),
+    credibility: z.number().min(1).max(5),
+    readability: z.number().min(1).max(5),
+    appropriateness: z.number().min(1).max(5)
+  }),
+  findings: z.array(z.object({
+    id: z.string(),
+    dimension: z.enum(["truthfulness", "relevance", "readability", "ats", "appropriateness", "credibility"]),
+    status: z.enum(["pass", "warn", "fail"]),
+    label: z.string(),
+    detail: z.string(),
+    section: z.string().optional().default(""),
+    sourceExperienceId: z.string().optional().default(""),
+    mustFix: z.boolean(),
+    patchInstruction: z.string()
+  }))
+});
+
 export const llmBaseProfileSchema = z.object({
   id: z.string(),
   contact: contactSchema,
   targetRole: z.string(),
-  outputLanguage: outputLanguageSchema,
   summary: z.string(),
   experiences: z.array(experienceSchema),
   education: z.array(llmEducationSchema),
+  projects: z.array(projectSchema).optional(),
   skills: z.array(z.string()),
   // Array (not record) form: the strict structured-output schema can't express an
   // open-ended object. app.ts folds this back into the record-shaped skillCategories.
   skillCategories: z.array(z.object({ name: z.string(), skills: z.array(z.string()) })),
+  certifications: z.array(z.string()),
+  languages: z.array(z.object({
+    language: z.string(),
+    level: z.string()
+  })),
   rawText: z.string(),
   updatedAt: z.string()
 });
@@ -74,7 +138,6 @@ export const llmTailoredCvSchema = z.object({
   id: z.string(),
   baseProfileId: z.string(),
   job: jobDescriptionSchema,
-  outputLanguage: outputLanguageSchema,
   contact: contactSchema,
   summary: z.string(),
   experiences: z.array(tailoredExperienceSchema),

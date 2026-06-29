@@ -2,11 +2,12 @@ import { afterEach, describe, expect, it } from "vitest";
 import { createApp } from "./app";
 import type { Generator } from "./openai";
 
+process.env.ENABLE_LEGACY_ENGINES = "true";
+
 const profile = {
   id: "p1",
   contact: { name: "Karol", email: "", phone: "", location: "", linkedIn: "" },
   targetRole: "Product Manager",
-  outputLanguage: "en" as const,
   summary: "Product manager",
   experiences: [],
   education: [],
@@ -38,7 +39,6 @@ describe("API routes", () => {
         id: "cv1",
         baseProfileId: "p1",
         job,
-        outputLanguage: "en",
         contact: profile.contact,
         summary: "Product manager focused on product strategy.",
         experiences: [],
@@ -63,7 +63,7 @@ describe("API routes", () => {
     const response = await fetch(`${base}/api/cvs/tailor`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ profile, job })
+      body: JSON.stringify({ profile, job, tailoringEngine: "builtin" })
     });
     expect(response.status).toBe(200);
     const tailored = await response.json();
@@ -81,16 +81,17 @@ describe("API routes", () => {
         id: "p1",
         contact: profile.contact,
         targetRole: "Product Manager",
-        outputLanguage: "en",
         summary: "Product manager",
         experiences: [],
         education: [],
         skills: [],
         skillCategories: [
           { name: "Strategy", skills: ["Roadmapping", "Discovery"] },
-          { name: "Tools", skills: ["Jira", "Roadmapping"] },
+          { name: "Tools", skills: ["Jira", "Roadmapping", "Advanced Excel", "Power Query", "Pivot Tables", "VLOOKUP"] },
           { name: "", skills: ["ignored"] }
         ],
+        certifications: ["ACCA F3 Financial Accounting (In Progress — Expected Jun 2026)"],
+        languages: [{ language: "English", level: "B2" }],
         rawText: "",
         updatedAt: now
       }) as never
@@ -105,13 +106,18 @@ describe("API routes", () => {
     const response = await fetch(`${base}/api/profile/extract`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text: "A CV with more than thirty characters of content.", outputLanguage: "en" })
+      body: JSON.stringify({ text: "A CV with more than thirty characters of content." })
     });
     expect(response.status).toBe(200);
     const result = await response.json();
-    expect(result.skillCategories).toEqual({ Strategy: ["Roadmapping", "Discovery"], Tools: ["Jira", "Roadmapping"] });
+    expect(result.skillCategories).toEqual({
+      Strategy: ["Roadmapping", "Discovery"],
+      Tools: ["Jira", "Roadmapping", "Advanced Excel", "Power Query", "Pivot Tables", "VLOOKUP"]
+    });
     // Flat union is de-duplicated and drops the empty-named category.
-    expect(result.skills).toEqual(["Roadmapping", "Discovery", "Jira"]);
+    expect(result.skills).toEqual(["Roadmapping", "Discovery", "Jira", "Advanced Excel", "Power Query", "Pivot Tables", "VLOOKUP"]);
+    expect(result.certifications).toEqual(["ACCA F3 Financial Accounting (In Progress — Expected Jun 2026)"]);
+    expect(result.languages).toEqual([{ language: "English", level: "B2" }]);
   });
 
   it("applies title review after tailoring when source evidence is available", async () => {
@@ -139,16 +145,17 @@ describe("API routes", () => {
           id: "cv-reviewed",
           baseProfileId: "p1",
           job,
-          outputLanguage: "en",
           contact: profile.contact,
           summary: "Backend-focused software developer.",
           experiences: [{
             id: "tailored-1",
             company: "Acme",
             role: "Software Developer",
+            originalRole: "Software Developer",
+            titleEvidenceStatus: "unchanged",
             startDate: "2022",
             endDate: "2024",
-            bullets: ["Built Node.js APIs and database integrations."],
+            bullets: [{ id: "b1", text: "Built Node.js APIs and database integrations.", sourceBulletIndexes: [0], evidenceStatus: "verified" }],
             sourceExperienceId: "source-1",
             sourceBulletIndexes: [0]
           }],
@@ -195,16 +202,17 @@ describe("API routes", () => {
       id: "cv-1",
       baseProfileId: "p1",
       job,
-      outputLanguage: "en" as const,
       contact: profile.contact,
       summary: "Software developer.",
       experiences: [{
         id: "tailored-1",
         company: "Acme",
         role: "Software Developer",
+        originalRole: "Software Developer",
+        titleEvidenceStatus: "unchanged" as const,
         startDate: "2022",
         endDate: "2024",
-        bullets: ["Built Node.js APIs."],
+        bullets: [{ id: "b1", text: "Built Node.js APIs.", sourceBulletIndexes: [0], evidenceStatus: "verified" as const }],
         sourceExperienceId: "source-1",
         sourceBulletIndexes: [0]
       }],
@@ -261,5 +269,48 @@ describe("API routes", () => {
         ? "Backend Developer"
         : "Software Developer");
     }
+  });
+
+  it("blocks export when edited evidence is stale", async () => {
+    const now = new Date().toISOString();
+    const experiencedProfile = {
+      ...profile,
+      contact: { ...profile.contact, email: "karol@example.com" },
+      experiences: [{
+        id: "source-1", company: "Acme", role: "Developer", startDate: "2022", endDate: "2024",
+        bullets: ["Built APIs."]
+      }],
+      skills: []
+    };
+    const cv = {
+      id: "blocked-cv", baseProfileId: "p1", job,
+      contact: experiencedProfile.contact, summary: "Developer with API experience.",
+      summaryClaims: [{ id: "c1", text: "API experience", evidence: [{ sourceExperienceId: "source-1", sourceBulletIndexes: [0] }], evidenceStatus: "verified" as const }],
+      experiences: [{
+        id: "e1", sourceExperienceId: "source-1", company: "Acme", role: "Developer", originalRole: "Developer",
+        titleEvidenceStatus: "unchanged" as const, startDate: "2022", endDate: "2024",
+        bullets: [{ id: "b1", text: "Edited API claim.", sourceBulletIndexes: [0], evidenceStatus: "stale" as const }],
+        sourceBulletIndexes: [0]
+      }],
+      education: [], skills: [], skillEvidence: [], skillCategories: {}, certifications: [], languages: [],
+      sectionOrder: [], style: { preset: "modern" as const }, dismissedChecks: [], unsupportedClaims: [],
+      pipeline: { pipelineVersion: "unified-v1", runId: "run", provider: "test", model: "test", stages: [], aiCallCount: 3, repairCount: 0 },
+      readiness: "blocked" as const, createdAt: now, updatedAt: now
+    };
+    const generator: Generator = { generate: async () => ({}) as never };
+    const server = createApp(() => generator).listen(0, "127.0.0.1");
+    await new Promise<void>((resolve) => server.once("listening", resolve));
+    closeServer = () => new Promise((resolve) => server.close(() => resolve()));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Missing test server address");
+
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/cvs/export?format=pdf`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ profile: experiencedProfile, cv })
+    });
+    expect(response.status).toBe(409);
+    const body = await response.json();
+    expect(body.findings.map((finding: { id: string }) => finding.id)).toContain("bullet-citations");
   });
 });

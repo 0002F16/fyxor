@@ -1,4 +1,4 @@
-import { educationHasContent, flattenSkillCategories, normalizeSkillCategories, type ResumeDocument } from "@cv-tailor/shared";
+import { bulletHasMetric, educationHasContent, flattenSkillCategories, normalizeSkillCategories, type BaseProfile, type ResumeDocument } from "@cv-tailor/shared";
 
 // Heuristic resume-completeness engine. Pure and side-effect free so it can be
 // unit-tested and reused by the base-resume and tailored-CV editors alike. It
@@ -30,6 +30,78 @@ const WEIGHT: Record<CheckSeverity, number> = { required: 2, recommended: 1 };
 const MIN_SUMMARY_CHARS = 80;
 const MIN_BULLETS_PER_ROLE = 2;
 const MIN_SKILLS = 5;
+
+// Onboarding-level completeness, grouped by the sections the setup wizard walks.
+// Drives the "smart stepper": a parsed profile auto-skips sections that come back
+// `complete`, and the manual path uses the same booleans for its progress meter.
+// Pure so it can be unit-tested and shared between the summary cards and steps.
+export type ProfileSectionId = "basics" | "experience" | "skills" | "education" | "extras";
+
+export interface SectionStatus {
+  id: ProfileSectionId;
+  label: string;
+  complete: boolean;
+  // One-line recap when complete (e.g. "3 roles · 11 bullets"), shown on the
+  // collapsed summary card.
+  summary: string;
+  // What's missing when incomplete — surfaced on the expanded card so the user
+  // knows exactly why it needs a look.
+  reason?: string;
+}
+
+export function sectionCompleteness(profile: BaseProfile): SectionStatus[] {
+  const categories = normalizeSkillCategories(profile.skillCategories, profile.skills);
+  const skillCount = flattenSkillCategories(categories).filter(Boolean).length;
+  const rolesWithContent = profile.experiences.filter((e) => e.role.trim() || e.company.trim() || e.bullets.some(Boolean));
+  const bulletCount = rolesWithContent.reduce((n, e) => n + e.bullets.filter((b) => b.trim()).length, 0);
+  const thinRoles = rolesWithContent.filter((e) => e.bullets.filter((b) => b.trim()).length < MIN_BULLETS_PER_ROLE);
+  const eduWithContent = profile.education.filter(educationHasContent);
+  const certCount = profile.certifications.filter((c) => c.trim()).length;
+  const langCount = profile.languages.filter((l) => l.language.trim()).length;
+  const someBullets = rolesWithContent.some((e) => e.bullets.some((b) => b.trim()));
+  const anyMetric = rolesWithContent.some((e) => e.bullets.some(bulletHasMetric));
+
+  const basicsComplete = Boolean(profile.contact.name.trim() && profile.contact.email.trim());
+  const experienceComplete = rolesWithContent.length > 0 && thinRoles.length === 0;
+  const skillsComplete = skillCount >= MIN_SKILLS;
+  const educationComplete = eduWithContent.length > 0;
+
+  return [
+    {
+      id: "basics", label: "Basics", complete: basicsComplete,
+      summary: profile.contact.name.trim() ? `${profile.contact.name.trim()}${profile.contact.email.trim() ? ` · ${profile.contact.email.trim()}` : ""}` : "Name and contact details",
+      reason: basicsComplete ? undefined : "Add your name and a contact email."
+    },
+    {
+      id: "experience", label: "Experience", complete: experienceComplete,
+      summary: rolesWithContent.length ? `${rolesWithContent.length} role${rolesWithContent.length === 1 ? "" : "s"} · ${bulletCount} bullet${bulletCount === 1 ? "" : "s"}` : "Your work history",
+      reason: rolesWithContent.length === 0
+        ? "Add at least one role with a few bullet points."
+        : thinRoles.length > 0
+          ? `Add at least ${MIN_BULLETS_PER_ROLE} bullets to every role.`
+          : someBullets && !anyMetric
+            ? "Looks good — adding a number to a bullet would make it even stronger."
+            : undefined
+    },
+    {
+      id: "skills", label: "Skills", complete: skillsComplete,
+      summary: skillCount ? `${skillCount} skill${skillCount === 1 ? "" : "s"}` : "Your key skills",
+      reason: skillsComplete ? undefined : `List at least ${MIN_SKILLS} relevant skills.`
+    },
+    {
+      id: "education", label: "Education", complete: educationComplete,
+      summary: eduWithContent.length ? `${eduWithContent.length} entr${eduWithContent.length === 1 ? "y" : "ies"}` : "Your degree or qualifications",
+      reason: educationComplete ? undefined : "Add your degree or qualifications."
+    },
+    {
+      // Optional by design — never blocks finishing, so always "complete".
+      id: "extras", label: "Certifications & languages", complete: true,
+      summary: certCount || langCount
+        ? [certCount && `${certCount} cert${certCount === 1 ? "" : "s"}`, langCount && `${langCount} language${langCount === 1 ? "" : "s"}`].filter(Boolean).join(" · ")
+        : "Optional — add if they help"
+    }
+  ];
+}
 
 // A "documented" resume can be either a base profile (headline via targetRole)
 // or a tailored CV (headline via job.title, plus unsupportedClaims). We read

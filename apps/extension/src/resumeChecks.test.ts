@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { evaluateResume } from "./resumeChecks";
+import type { BaseProfile } from "@cv-tailor/shared";
+import { evaluateResume, sectionCompleteness, type ProfileSectionId } from "./resumeChecks";
 
 type Doc = Parameters<typeof evaluateResume>[0];
 
@@ -80,5 +81,69 @@ describe("evaluateResume", () => {
     const flagged = ids(doc);
     expect(flagged).toContain("contact-name");
     expect(flagged).toContain("contact-email");
+  });
+});
+
+function baseProfile(overrides: Partial<BaseProfile> = {}): BaseProfile {
+  return {
+    id: "p1",
+    contact: { name: "Jane Doe", email: "jane@example.com", phone: "+1 555", location: "London", linkedIn: "linkedin.com/in/jane" },
+    targetRole: "Backend Engineer",
+    summary: "Experienced engineer.",
+    experiences: [{ id: "e1", company: "Acme", role: "Engineer", startDate: "2020", endDate: "Present", bullets: ["Shipped X to 1M users", "Led Y"] }],
+    education: [{ id: "ed1", school: "University of Leeds", degree: "BSc Computer Science", location: "Leeds", graduationDate: "2019", gpa: "", honors: "", coursework: [] }],
+    skills: ["TypeScript", "Go", "Python", "AWS", "Docker"],
+    skillCategories: { Languages: ["TypeScript", "Go", "Python"], Tools: ["AWS", "Docker"] },
+    certifications: [],
+    languages: [],
+    sectionOrder: [],
+    style: { preset: "modern" },
+    dismissedChecks: [],
+    rawText: "",
+    updatedAt: new Date().toISOString(),
+    ...overrides
+  } as BaseProfile;
+}
+
+const status = (profile: BaseProfile, id: ProfileSectionId) => sectionCompleteness(profile).find((s) => s.id === id)!;
+
+describe("sectionCompleteness", () => {
+  it("marks every section complete for a full profile", () => {
+    const all = sectionCompleteness(baseProfile());
+    expect(all.map((s) => s.id)).toEqual(["basics", "experience", "skills", "education", "extras"]);
+    expect(all.filter((s) => !s.complete)).toEqual([]);
+  });
+
+  it("flags basics when name or email is missing", () => {
+    const s = status(baseProfile({ contact: { name: "", email: "", phone: "", location: "", linkedIn: "" } }), "basics");
+    expect(s.complete).toBe(false);
+    expect(s.reason).toBeTruthy();
+  });
+
+  it("flags experience when a role has too few bullets", () => {
+    const thin = baseProfile({ experiences: [{ id: "e1", company: "Acme", role: "Engineer", startDate: "", endDate: "", bullets: ["only one"] }] });
+    expect(status(thin, "experience").complete).toBe(false);
+  });
+
+  it("flags experience when there are no roles", () => {
+    expect(status(baseProfile({ experiences: [] }), "experience").complete).toBe(false);
+  });
+
+  it("flags skills below the minimum count", () => {
+    const few = baseProfile({ skills: ["TypeScript"], skillCategories: { Skills: ["TypeScript"] } });
+    expect(status(few, "skills").complete).toBe(false);
+  });
+
+  it("flags education when there is no entry with content", () => {
+    expect(status(baseProfile({ education: [] }), "education").complete).toBe(false);
+  });
+
+  it("keeps extras complete even when empty (optional section)", () => {
+    expect(status(baseProfile({ certifications: [], languages: [] }), "extras").complete).toBe(true);
+  });
+
+  it("summarizes complete sections with a recap string", () => {
+    expect(status(baseProfile(), "experience").summary).toMatch(/role/);
+    expect(status(baseProfile(), "skills").summary).toMatch(/skill/);
   });
 });

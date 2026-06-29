@@ -7,7 +7,6 @@ const profile: BaseProfile = {
   id: "profile-1",
   contact: { name: "Candidate", email: "", phone: "", location: "", linkedIn: "" },
   targetRole: "",
-  outputLanguage: "en",
   summary: "",
   experiences: [
     { id: "source-1", company: "Acme", role: "Software Developer", startDate: "Jan 2022", endDate: "Dec 2024", bullets: ["Built APIs."] },

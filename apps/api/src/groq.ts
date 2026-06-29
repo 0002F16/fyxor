@@ -1,9 +1,10 @@
 import OpenAI from "openai";
 import { z } from "zod";
 import type { Generator, GenerateInput } from "./openai.js";
-import { zodToJsonSchema, LLM_TIMEOUT_MS } from "./openai.js";
+import { zodToJsonSchema, LLM_TIMEOUT_MS, normalizeStructuredOutput } from "./openai.js";
 
 export class GroqGenerator implements Generator {
+  lastUsage?: { inputTokens?: number; outputTokens?: number };
   private client: OpenAI;
   private model: string;
 
@@ -32,6 +33,10 @@ export class GroqGenerator implements Generator {
 
     const text = response.choices[0]?.message?.content;
     if (!text) throw new Error("Groq returned an empty response");
-    return schema.parse(JSON.parse(text));
+    this.lastUsage = {
+      inputTokens: response.usage?.prompt_tokens,
+      outputTokens: response.usage?.completion_tokens
+    };
+    return schema.parse(normalizeStructuredOutput(name, JSON.parse(text)));
   }
 }

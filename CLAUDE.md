@@ -42,15 +42,24 @@ Configured via `apps/api/.env`:
 
 The extension can override per-request via the `x-ai-provider` header.
 
-## CCC engine
+## Tailoring pipeline
 
-CCC is the **default** tailoring engine (`emptyStorageState().settings.tailoringEngine = "ccc"`). It's a Python subprocess (external repo).
+The default is the unified evidence-first pipeline: evidence plan → constrained
+writer → independent critic → targeted repair when required. Tailoring runs are
+persisted in `tailoring_runs` and exposed through `/api/tailoring-runs`.
+Unified v3 sanitizes recoverable plan/writer mistakes, copies certifications and
+languages exactly from the base profile, expands under-selected source skills and
+bullets deterministically, and uses source-backed fallbacks before allowing a
+factual issue to block export.
+
+CCC and the original single-pass tailor are legacy benchmark/rollback engines.
+They are reachable only when `ENABLE_LEGACY_ENGINES=true`.
 
 - `CCC_ENGINE_ROOT` — path to the CCC repo root
 - `CCC_PYTHON` — path to the CCC venv python (defaults to `$CCC_ENGINE_ROOT/.venv/bin/python3`)
 - `CCC_LLM_PROVIDER` — override the LLM inside CCC (defaults to Gemini)
 - CCC auto-loads its own `.env` from `$CCC_ENGINE_ROOT/.env`
-- If CCC isn't configured, API **gracefully degrades** to the built-in single-pass engine with a `console.warn` — no hard error
+- Production tailoring never silently falls back to CCC or the old single-pass engine.
 
 Check availability: `GET /health` returns `{ ccc: { available, engineRoot, python } }`
 
@@ -64,8 +73,10 @@ All routes under `/api/*` require auth (Better Auth bearer token) except `/healt
 | POST | `/api/profile/parse-file` | Parse uploaded PDF/DOCX → raw text |
 | POST | `/api/profile/extract` | LLM: raw text → structured `BaseProfile` |
 | POST | `/api/profile/categorize-skills` | LLM: skills list → categorized skills |
-| POST | `/api/cvs/tailor` | LLM: profile + job → `TailoredCv` (CCC or built-in) |
-| POST | `/api/cvs/regenerate` | LLM: regenerate one section of a tailored CV |
+| POST | `/api/tailoring-runs` | Create/reuse a recoverable unified tailoring run |
+| GET/DELETE | `/api/tailoring-runs/:id` | Poll or cancel a tailoring run |
+| POST | `/api/cvs/tailor` | Compatibility wrapper; unified unless legacy flag is enabled |
+| POST | `/api/cvs/regenerate` | Regenerate one section and return a section patch |
 | GET | `/api/data/sync` | Pull user data from Postgres |
 | PUT | `/api/data/sync` | Push user data to Postgres |
 | GET | `/api/data/usage` | Monthly tailor count for the user |
@@ -135,7 +146,8 @@ Integration tests (`db.integration.test.ts`) require a live Postgres connection.
 | `MIN_BULLETS_PER_ROLE` | 2 | Bullets per experience role |
 | `MIN_SKILLS` | 5 | Total skill count |
 
-`unsupportedClaims` is `severity: "recommended"` — it warns the user but does not block export and carries less score weight than required checks.
+Tailored CVs use separate Evidence, Relevance, Readability, ATS, and
+Appropriateness signals. Hard factual failures and stale evidence block export.
 
 ## Common gotchas
 

@@ -9,6 +9,7 @@
   "scripts": {
     "dev": "npm run dev -w @cv-tailor/api",
     "dev:extension": "npm run dev -w @cv-tailor/extension",
+    "benchmark:resume": "tsx benchmarks/resume-tailoring/run.mts",
     "build": "npm run build -w @cv-tailor/shared && npm run build -w @cv-tailor/api && npm run build -w @cv-tailor/extension",
     "test": "vitest run",
     "test:watch": "vitest",

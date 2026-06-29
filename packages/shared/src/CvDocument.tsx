@@ -8,6 +8,7 @@ import {
   makeId,
   normalizeSkillCategories,
   resumeStyleVars,
+  bulletText,
   type BaseProfile,
   type CvStyle,
   type EducationEntry,
@@ -21,7 +22,11 @@ import {
 export type ResumeDocument = {
   contact: BaseProfile["contact"];
   summary: string;
-  experiences: BaseProfile["experiences"];
+  experiences: Array<Omit<BaseProfile["experiences"][number], "bullets"> & {
+    bullets: Array<string | { id: string; text: string; sourceBulletIndexes: number[]; evidenceStatus: string }>;
+    originalRole?: string;
+    titleEvidenceStatus?: string;
+  }>;
   education: EducationEntry[];
   skills: string[];
   skillCategories: Record<string, string[]>;
@@ -33,6 +38,7 @@ export type ResumeDocument = {
 };
 
 type EditableTag = "span" | "p" | "h1" | "li" | "div";
+type EvidenceLine = { id: string; text: string; sourceBulletIndexes: number[]; evidenceStatus: string };
 
 // A single inline-editable text node. The DOM is the source of truth while
 // focused; we only push committed text up on blur so React never fights the
@@ -146,16 +152,23 @@ function Section({ title, children, onRegenerate, onRemove, onMoveUp, onMoveDown
 
 // Bulleted/line list with per-row inline editing and add/remove affordances.
 function EditList({ items, editable, onChange, addLabel, placeholder, disc = true }: {
-  items: string[];
+  items: Array<string | EvidenceLine>;
   editable: boolean;
-  onChange: (next: string[]) => void;
+  onChange: (next: Array<string | EvidenceLine>) => void;
   addLabel: string;
   placeholder: string;
   disc?: boolean;
 }) {
   const editRow = (index: number, value: string) => {
     const next = [...items];
-    if (value.trim()) next[index] = value.trim(); else next.splice(index, 1);
+    const current = next[index];
+    if (value.trim()) {
+      next[index] = typeof current === "string"
+        ? value.trim()
+        : current
+          ? { ...current, text: value.trim(), evidenceStatus: "stale" }
+          : value.trim();
+    } else next.splice(index, 1);
     onChange(next);
   };
   return (
@@ -164,8 +177,13 @@ function EditList({ items, editable, onChange, addLabel, placeholder, disc = tru
         // `relative` so the remove control can sit in the canvas gutter (absolute,
         // outside the text flow) — keeps the editable column the same width as the
         // exported output instead of reserving an inline slot for the button.
-        <li className="group/row relative" key={index}>
-          <Text editable={editable} value={line} onCommit={(value) => editRow(index, value)} placeholder={placeholder} />
+        <li className="group/row relative" key={typeof line === "string" ? index : line.id}>
+          <Text editable={editable} value={bulletText(line as never)} onCommit={(value) => editRow(index, value)} placeholder={placeholder} />
+          {editable && typeof line !== "string" && line.evidenceStatus !== "verified" && (
+            <span className={`ml-1 text-[9px] font-semibold uppercase ${line.evidenceStatus === "unsupported" ? "text-red-500" : "text-amber-500"}`}>
+              {line.evidenceStatus === "stale" ? "edited" : line.evidenceStatus.replace("-", " ")}
+            </span>
+          )}
           {editable && (
             <button type="button" onClick={() => editRow(index, "")} className="cv-control absolute -right-6 top-0 text-muted hover:text-red-500" aria-label="Remove">
               <X size={12} />
@@ -191,10 +209,11 @@ const CONTACT_FIELDS = [
   { key: "linkedIn" as const, icon: Linkedin, placeholder: "LinkedIn" }
 ];
 
-export function CvDocument({ cv, headline: headlineProp, editable = false, onChange, onCommitHeadline, onRegenerate, busy = false }: {
+export function CvDocument({ cv, headline: headlineProp, editable = false, lockExperienceFacts = false, onChange, onCommitHeadline, onRegenerate, busy = false }: {
   cv: ResumeDocument;
   headline?: string;
   editable?: boolean;
+  lockExperienceFacts?: boolean;
   onChange?: (cv: ResumeDocument) => void;
   onCommitHeadline?: (value: string) => void;
   onRegenerate?: (section: "summary" | "experience" | "skills", experienceId?: string) => void;
@@ -229,7 +248,7 @@ export function CvDocument({ cv, headline: headlineProp, editable = false, onCha
   const setContact = (key: keyof ResumeDocument["contact"], value: string) => update({ contact: { ...cv.contact, [key]: value } });
   const setExperience = (id: string, patch: Partial<ResumeDocument["experiences"][number]>) =>
     update({ experiences: cv.experiences.map((experience) => (experience.id === id ? { ...experience, ...patch } : experience)) });
-  const setBullets = (id: string, next: string[]) => setExperience(id, { bullets: next });
+  const setBullets = (id: string, next: Array<string | EvidenceLine>) => setExperience(id, { bullets: next });
   const addExperience = () =>
     update({ experiences: [...cv.experiences, { id: makeId("exp"), company: "", role: "", startDate: "", endDate: "", bullets: [] }] });
   const removeExperience = (id: string) => update({ experiences: cv.experiences.filter((experience) => experience.id !== id) });
@@ -306,13 +325,15 @@ export function CvDocument({ cv, headline: headlineProp, editable = false, onCha
           {cv.experiences.map((experience) => (
             <div className="group/sec relative break-inside-avoid" key={experience.id}>
               <div className="flex items-baseline justify-between gap-3">
-                <Text editable={editable} value={experience.role} onCommit={(value) => setExperience(experience.id, { role: value })}
-                  tag="p" className="font-semibold text-ink" placeholder="Role" />
+                <div>
+                  <Text editable={editable} value={experience.role} onCommit={(value) => setExperience(experience.id, { role: value })}
+                    tag="p" className="font-semibold text-ink" placeholder="Role" />
+                </div>
                 {(editable || experience.startDate || experience.endDate) && (
                   <span className="flex shrink-0 items-center gap-1 text-[11px] font-medium text-muted">
-                    <Text editable={editable} value={experience.startDate} onCommit={(value) => setExperience(experience.id, { startDate: value })} placeholder="Start" />
+                    <Text editable={editable && !lockExperienceFacts} value={experience.startDate} onCommit={(value) => setExperience(experience.id, { startDate: value })} placeholder="Start" />
                     <span>–</span>
-                    <Text editable={editable} value={experience.endDate} onCommit={(value) => setExperience(experience.id, { endDate: value })} placeholder="End" />
+                    <Text editable={editable && !lockExperienceFacts} value={experience.endDate} onCommit={(value) => setExperience(experience.id, { endDate: value })} placeholder="End" />
                   </span>
                 )}
               </div>
@@ -335,7 +356,7 @@ export function CvDocument({ cv, headline: headlineProp, editable = false, onCha
                 </span>
               )}
               {(editable || experience.company) && (
-                <Text editable={editable} value={experience.company} onCommit={(value) => setExperience(experience.id, { company: value })}
+                <Text editable={editable && !lockExperienceFacts} value={experience.company} onCommit={(value) => setExperience(experience.id, { company: value })}
                   tag="p" className="text-[12px] font-medium text-emerald" placeholder="Company" />
               )}
               {(editable || experience.bullets.filter(Boolean).length > 0) && (
@@ -365,15 +386,33 @@ export function CvDocument({ cv, headline: headlineProp, editable = false, onCha
             const editEntries = (value: string) =>
               writeCategories(categories.map((cat, i) => (i === index ? [cat[0], value.split(",").map((s) => s.trim()).filter(Boolean)] : cat)));
             const removeCategory = () => writeCategories(categories.filter((_, i) => i !== index));
+            const moveCategory = (to: number) => {
+              if (to < 0 || to >= categories.length) return;
+              const next = categories.map((cat) => [...cat] as [string, string[]]);
+              [next[index], next[to]] = [next[to]!, next[index]!];
+              writeCategories(next);
+            };
             return (
-              <p className="group/row relative flex flex-wrap items-baseline gap-x-1.5" key={index}>
-                <Text editable={editable} value={name} onCommit={renameCategory} className="font-semibold text-ink" placeholder="Category" />
-                <span className="text-muted">—</span>
+              <p className="group/row relative flex flex-wrap items-baseline gap-x-1" key={index}>
+                <span className="font-semibold text-ink">
+                  <Text editable={editable} value={name} onCommit={renameCategory} className="font-semibold text-ink" placeholder="Category" />
+                  <span>:</span>
+                </span>
                 <Text editable={editable} value={entries.join(", ")} onCommit={editEntries} className="flex-1" placeholder="Comma-separated skills" />
                 {editable && (
-                  <button type="button" onClick={removeCategory} className="cv-control absolute -right-6 top-0 text-muted hover:text-red-500" aria-label="Remove category">
-                    <X size={12} />
-                  </button>
+                  <span className="cv-control absolute -right-14 top-0 inline-flex items-center gap-0.5">
+                    <button type="button" onClick={() => moveCategory(index - 1)} disabled={index === 0}
+                      className="text-muted hover:text-emerald disabled:opacity-25" aria-label="Move skill group up">
+                      <ChevronUp size={12} />
+                    </button>
+                    <button type="button" onClick={() => moveCategory(index + 1)} disabled={index === categories.length - 1}
+                      className="text-muted hover:text-emerald disabled:opacity-25" aria-label="Move skill group down">
+                      <ChevronDown size={12} />
+                    </button>
+                    <button type="button" onClick={removeCategory} className="text-muted hover:text-red-500" aria-label="Remove category">
+                      <X size={12} />
+                    </button>
+                  </span>
                 )}
               </p>
             );
@@ -390,7 +429,7 @@ export function CvDocument({ cv, headline: headlineProp, editable = false, onCha
 
     certifications: certifications.length > 0 ? (
       <Section title="Certifications" onRemove={editable ? () => update({ certifications: [] }) : undefined} {...moveProps("certifications")}>
-        <EditList items={certifications} editable={editable} onChange={(next) => update({ certifications: next })} addLabel="Add certification" placeholder="Certification" />
+        <EditList items={certifications} editable={editable} onChange={(next) => update({ certifications: next.map((item) => typeof item === "string" ? item : item.text) })} addLabel="Add certification" placeholder="Certification" />
       </Section>
     ) : editable ? (
       <button type="button" onClick={() => update({ certifications: [""] })}
@@ -446,7 +485,7 @@ export function CvDocument({ cv, headline: headlineProp, editable = false, onCha
                 <Text editable value={entry.honors} onCommit={(value) => setEducation(entry.id, { honors: value })} placeholder="Honors / distinctions" />
               </div>
               <div className="mt-1">
-                <EditList items={entry.coursework} editable onChange={(next) => setEducation(entry.id, { coursework: next })} addLabel="Add coursework" placeholder="Relevant coursework or activity" />
+                <EditList items={entry.coursework} editable onChange={(next) => setEducation(entry.id, { coursework: next.map((item) => typeof item === "string" ? item : item.text) })} addLabel="Add coursework" placeholder="Relevant coursework or activity" />
               </div>
             </div>
           ) : (() => {

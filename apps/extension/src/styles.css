@@ -29,6 +29,50 @@ textarea { resize: vertical; }
 .chip { @apply rounded-lg bg-mint px-2 py-1 text-xs font-semibold text-deep; }
 .section-title { @apply font-display text-xl font-bold tracking-tight text-ink; }
 
+/* Onboarding upload affordance: a calm dashed dropzone that warms to emerald on
+   hover/drag. The hero variant (Welcome) is taller and centers its contents. */
+.onboarding-dropzone { @apply flex w-full cursor-pointer items-center justify-center gap-2 rounded-2xl border-2 border-dashed border-line bg-soft p-7 text-sm transition hover:border-emerald hover:bg-mint/40; }
+.onboarding-dropzone-hero { @apply flex-col py-12 text-center; }
+.onboarding-dropzone.is-dragover { @apply border-emerald bg-mint/60; }
+
+/* Review-summary section card and its status pills (✓ complete / ⚠ needs a look). */
+.status-card { @apply rounded-2xl border border-line bg-white p-4 transition hover:border-emerald/50; }
+.status-chip { @apply inline-flex shrink-0 items-center gap-1 rounded-lg px-2 py-1 text-xs font-semibold; }
+.status-chip-ok { @apply bg-mint text-deep; }
+.status-chip-warn { @apply bg-amber-100 text-amber-700; }
+
+/* Staggered rise-in for summary cards and the staged loader lines. */
+@keyframes onboarding-rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+.onboarding-rise { animation: onboarding-rise .3s cubic-bezier(.2, .7, .2, 1) both; }
+@media (prefers-reduced-motion: reduce) { .onboarding-rise { animation: none; } }
+
+/* Home dashboard: a subtle staggered rise-in on load. Regions further down the
+   page fade in slightly later for a calm, intentional reveal. */
+@keyframes home-rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+.home-rise { animation: home-rise .34s cubic-bezier(.2, .7, .2, 1) both; }
+.home-rise:nth-of-type(2) { animation-delay: .05s; }
+.home-rise:nth-of-type(3) { animation-delay: .1s; }
+.home-rise:nth-of-type(4) { animation-delay: .15s; }
+.home-rise:nth-of-type(5) { animation-delay: .2s; }
+@media (prefers-reduced-motion: reduce) { .home-rise { animation: none; } }
+
+/* Status-change toast: slides up from bottom-right and fades out. */
+@keyframes toast-in { from { opacity: 0; transform: translateY(12px) scale(.95); } to { opacity: 1; transform: translateY(0) scale(1); } }
+.animate-toast { animation: toast-in .22s cubic-bezier(.2, .7, .2, 1) both; }
+
+/* Applications tracker rows: a faint accent bar slides in on hover. */
+.tracker-row { position: relative; }
+.tracker-row::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: rgb(var(--cv-accent-rgb, 5 150 105)); opacity: 0; transform: scaleY(.4); transform-origin: center; transition: opacity .15s ease, transform .15s ease; }
+.tracker-row:hover::before { opacity: 1; transform: scaleY(1); }
+
+/* Comfortable paper margins for both the tailored editor and Your Resume. */
+.tailored-resume-canvas .cv-document,
+.your-resume-canvas .cv-document {
+  padding-top: clamp(2.5rem, 7vw, 4rem);
+  padding-left: clamp(2rem, 6vw, 3rem);
+  padding-right: clamp(2rem, 6vw, 3rem);
+}
+
 /* Inline, Google-Docs-style editing on the resume canvas */
 .cv-editable { cursor: text; border-radius: 4px; outline: none; transition: box-shadow .12s ease, background-color .12s ease; }
 .cv-editable:hover { box-shadow: 0 0 0 2px rgba(16, 185, 129, .14); }

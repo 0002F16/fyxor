@@ -33,7 +33,12 @@ export function mergeReviewedExperienceTitles(
     const replacement = replacements.get(experience.sourceExperienceId);
     if (!replacement || replacement === experience.role) return experience;
     changed = true;
-    return { ...experience, role: replacement };
+    return {
+      ...experience,
+      role: replacement,
+      originalRole: experience.originalRole || experience.role,
+      titleEvidenceStatus: replacement === (experience.originalRole || experience.role) ? "unchanged" as const : "verified-reframe" as const
+    };
   });
   return changed ? { ...cv, experiences } : cv;
 }

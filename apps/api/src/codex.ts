@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Generator, GenerateInput } from "./openai.js";
-import { zodToJsonSchema } from "./openai.js";
+import { normalizeStructuredOutput, zodToJsonSchema } from "./openai.js";
 
 function runCodex(command: string, args: string[], cwd: string, prompt: string): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -62,7 +62,7 @@ ${JSON.stringify(payload)}`;
 
     try {
       await runCodex(this.codexPath, args, directory, prompt);
-      return schema.parse(JSON.parse(await readFile(outputPath, "utf8")));
+      return schema.parse(normalizeStructuredOutput(name, JSON.parse(await readFile(outputPath, "utf8"))));
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
       throw new Error(`Local Codex failed. Confirm Codex CLI is installed and signed in. ${detail}`);

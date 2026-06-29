@@ -13,6 +13,7 @@ import {
 import type { Browser } from "puppeteer";
 import {
   educationHasContent,
+  bulletText,
   effectiveSectionOrder,
   formatEducationEntry,
   normalizeSkillCategories,
@@ -42,25 +43,52 @@ async function getBrowser(): Promise<Browser> {
   return browserPromise;
 }
 
-export async function makePdf(cv: TailoredCv): Promise<Buffer> {
+export type PdfLayoutAudit = {
+  horizontalOverflow: boolean;
+  clippedElementCount: number;
+  contentHeight: number;
+  characterCount: number;
+};
+
+export async function makePdfWithAudit(cv: TailoredCv): Promise<{ buffer: Buffer; audit: PdfLayoutAudit }> {
   const browser = await getBrowser();
   const page = await browser.newPage();
   try {
     const html = renderCvHtml(cv);
     // All fonts are base64-inlined so networkidle0 is fine even offline.
     await page.setContent(html, { waitUntil: "load" });
+    const audit = await page.evaluate(() => {
+      const root = document.querySelector("article") as HTMLElement | null;
+      if (!root) return { horizontalOverflow: true, clippedElementCount: 1, contentHeight: 0, characterCount: 0 };
+      const rootRect = root.getBoundingClientRect();
+      const clippedElementCount = Array.from(root.querySelectorAll("p,li,h1,h2,span"))
+        .filter((element) => {
+          const rect = element.getBoundingClientRect();
+          return rect.right > rootRect.right + 1 || rect.left < rootRect.left - 1;
+        }).length;
+      return {
+        horizontalOverflow: root.scrollWidth > root.clientWidth + 1,
+        clippedElementCount,
+        contentHeight: root.scrollHeight,
+        characterCount: (root.innerText || "").length
+      };
+    });
     const pdf = await page.pdf({ format: "A4", printBackground: true, preferCSSPageSize: true });
-    return Buffer.from(pdf);
+    return { buffer: Buffer.from(pdf), audit };
   } finally {
     await page.close();
   }
+}
+
+export async function makePdf(cv: TailoredCv): Promise<Buffer> {
+  return (await makePdfWithAudit(cv)).buffer;
 }
 
 // ---------------------------------------------------------------------------
 // DOCX export — Word can't render HTML so this stays a docx-library mapping,
 // but it's been retouched to mirror the on-screen canvas as closely as Word
 // allows: centered header with a bottom border, emerald headline, stacked
-// role/company, right-aligned dates, emerald-accented bullets, Category —
+// role/company, right-aligned dates, emerald-accented bullets, Category:
 // entries skills.
 // ---------------------------------------------------------------------------
 
@@ -113,7 +141,7 @@ function cvSections(cv: TailoredCv): Section[] {
     summary: [{ heading: "Profile", lines: [cv.summary] }],
     experience: cv.experiences.map((exp) => ({
       heading: exp.role,
-      lines: exp.bullets,
+      lines: exp.bullets.map(bulletText),
       meta: [exp.company, [exp.startDate, exp.endDate].filter(Boolean).join(" – ")].filter(Boolean).join("  ·  ")
     })),
     skills: [{ heading: "Skills", lines: [], categories: skillCategories }],
@@ -232,7 +260,7 @@ export async function makeDocx(cv: TailoredCv): Promise<Buffer> {
         children.push(new Paragraph({
           children: [
             new TextRun({ text: cat.name, bold: true, size: S.body, font: FONT_BODY, color: INK }),
-            new TextRun({ text: " — " + cat.entries, size: S.body, font: FONT_BODY, color: MUTED })
+            new TextRun({ text: ": " + cat.entries, size: S.body, font: FONT_BODY, color: MUTED })
           ],
           keepLines: true,
           spacing: { after: 60 }

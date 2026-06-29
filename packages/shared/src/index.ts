@@ -1,8 +1,13 @@
 import { z } from "zod";
 
-export const outputLanguageSchema = z.enum(["en", "pl"]);
 export const aiProviderSchema = z.enum(["codex-local", "openai-api", "gemini-api", "groq-api"]);
 export const tailoringEngineSchema = z.enum(["builtin", "ccc"]);
+export const evidenceStatusSchema = z.enum(["verified", "needs-review", "stale", "unsupported", "legacy-unverified"]);
+export const skillProvenanceSchema = z.enum(["explicit", "equivalent", "inferred-baseline"]);
+export const requirementCoverageSchema = z.enum(["explicit", "supported-equivalent", "inferred-baseline", "unsupported"]);
+export const readinessStatusSchema = z.enum(["ready", "needs-source-update", "blocked"]);
+export const evalDimensionSchema = z.enum(["truthfulness", "relevance", "readability", "ats", "appropriateness"]);
+export const evalStatusSchema = z.enum(["pass", "warn", "fail"]);
 
 export const contactSchema = z.object({
   name: z.string().default(""),
@@ -21,6 +26,14 @@ export const positioningSchema = z.object({
   level: z.string().default(""),
   strategy: z.string().default(""),
   notes: z.string().default("")
+});
+
+export const projectSchema = z.object({
+  id: z.string(),
+  title: z.string().default(""),
+  description: z.string().default(""),
+  bullets: z.array(z.string()).default([]),
+  technologies: z.array(z.string()).default([])
 });
 
 export const experienceSchema = z.object({
@@ -74,10 +87,10 @@ export const baseProfileSchema = z.object({
   id: z.string(),
   contact: contactSchema,
   targetRole: z.string().default(""),
-  outputLanguage: outputLanguageSchema.default("en"),
   summary: z.string().default(""),
   experiences: z.array(experienceSchema).default([]),
   education: educationArraySchema,
+  projects: z.array(projectSchema).optional(),
   skills: z.array(z.string()).default([]),
   skillCategories: z.record(z.array(z.string())).default({}),
   certifications: z.array(z.string()).default([]),
@@ -101,6 +114,20 @@ export const jobDescriptionSchema = z.object({
 
 export const tailoredExperienceSchema = experienceSchema.extend({
   sourceExperienceId: z.string().default(""),
+  originalRole: z.string().default(""),
+  titleEvidenceStatus: z.enum(["unchanged", "verified-reframe", "needs-review"]).default("unchanged"),
+  bullets: z.preprocess((input) => {
+    if (!Array.isArray(input)) return input;
+    return input.map((bullet, index) => typeof bullet === "string"
+      ? { id: `legacy_bullet_${index}`, text: bullet, sourceBulletIndexes: [], evidenceStatus: "legacy-unverified" }
+      : bullet);
+  }, z.array(z.object({
+    id: z.string(),
+    text: z.string(),
+    sourceBulletIndexes: z.array(z.number().int().nonnegative()).default([]),
+    evidenceStatus: evidenceStatusSchema.default("legacy-unverified")
+  }))).default([]),
+  // Compatibility projection for old clients. New code uses per-bullet citations.
   sourceBulletIndexes: z.array(z.number().int().nonnegative()).default([])
 });
 
@@ -110,16 +137,190 @@ export const unsupportedClaimSchema = z.object({
   reason: z.string()
 });
 
+export const evidenceReferenceSchema = z.object({
+  sourceExperienceId: z.string(),
+  sourceBulletIndexes: z.array(z.number().int().nonnegative()).default([])
+});
+
+// Summary evidence can come from the complete profile, not only experience
+// bullets. A single object shape keeps strict provider JSON schemas portable;
+// fields not used by the selected `kind` remain empty.
+export const summaryEvidenceReferenceSchema = z.object({
+  kind: z.enum([
+    "experience",
+    "language",
+    "skill",
+    "certification",
+    "education",
+    "employment",
+    "project",
+    "authorization",
+    "inference"
+  ]).optional(),
+  sourceExperienceId: z.string().optional(),
+  sourceBulletIndexes: z.array(z.number().int().nonnegative()).optional(),
+  language: z.string().optional(),
+  level: z.string().optional(),
+  skill: z.string().optional(),
+  certification: z.string().optional(),
+  educationId: z.string().optional(),
+  projectId: z.string().optional(),
+  value: z.string().optional(),
+  basis: z.string().optional(),
+  confidence: z.enum(["high", "medium", "low"]).optional()
+});
+
+export const summaryClaimSchema = z.object({
+  id: z.string(),
+  text: z.string(),
+  evidence: z.array(summaryEvidenceReferenceSchema).default([]),
+  requirementIds: z.array(z.string()).optional(),
+  provenance: z.enum(["explicit", "equivalent", "inferred-context"]).optional(),
+  evidenceStatus: evidenceStatusSchema.default("verified")
+});
+
+export const skillEvidenceSchema = z.object({
+  skill: z.string(),
+  evidence: z.array(evidenceReferenceSchema).default([]),
+  evidenceStatus: evidenceStatusSchema.default("verified"),
+  provenance: skillProvenanceSchema.default("explicit"),
+  sourceSkills: z.array(z.string()).default([]),
+  requirementIds: z.array(z.string()).default([])
+});
+
+export const evidencePlanSchema = z.object({
+  version: z.string().default("1"),
+  fit: z.enum(["direct", "adjacent", "stretch"]),
+  fitDimensions: z.object({
+    functionFit: z.enum(["direct", "adjacent", "change"]),
+    industryFit: z.enum(["direct", "adjacent", "unknown"]),
+    seniorityFit: z.enum(["matched", "step-up", "step-down", "unknown"]),
+    evidenceStrength: z.enum(["strong", "partial", "weak"])
+  }).optional(),
+  requirements: z.array(z.object({
+    id: z.string(),
+    text: z.string(),
+    priority: z.enum(["must", "important", "supporting"]),
+    type: z.enum([
+      "function",
+      "industry",
+      "seniority",
+      "language",
+      "certification",
+      "license",
+      "tool",
+      "education",
+      "authorization",
+      "competency",
+      "other"
+    ]).optional(),
+    hiringImportance: z.number().int().min(1).max(5).optional(),
+    summaryValue: z.number().int().min(1).max(5).optional(),
+    coverage: requirementCoverageSchema.default("unsupported"),
+    evidence: z.array(evidenceReferenceSchema).default([]),
+    summaryEvidence: z.array(summaryEvidenceReferenceSchema).optional(),
+    sourceSkills: z.array(z.string()).default([])
+  })),
+  summaryClaims: z.array(z.object({
+    id: z.string(),
+    objective: z.string(),
+    evidence: z.array(summaryEvidenceReferenceSchema),
+    requirementIds: z.array(z.string()).optional(),
+    mandatory: z.boolean().optional(),
+    provenance: z.enum(["explicit", "equivalent", "inferred-context"]).optional()
+  })),
+  summaryBlueprint: z.object({
+    positioningMode: z.enum([
+      "target-identity",
+      "adjacent-identity",
+      "transition",
+      "transferable",
+      "education-led",
+      "executive"
+    ]).optional(),
+    positioningStrategy: z.string().optional(),
+    targetIdentityAllowed: z.boolean().optional(),
+    decisiveRequirementIds: z.array(z.string()).optional(),
+    claimIds: z.array(z.string()).optional()
+  }).optional(),
+  roles: z.array(z.object({
+    sourceExperienceId: z.string(),
+    include: z.boolean(),
+    originalTitle: z.string(),
+    proposedTitle: z.string(),
+    titleEvidence: z.array(evidenceReferenceSchema).default([]),
+    titleConfidence: z.enum(["high", "medium", "low"]),
+    bulletObjectives: z.array(z.object({
+      id: z.string(),
+      objective: z.string(),
+      sourceBulletIndexes: z.array(z.number().int().nonnegative()),
+      requirementIds: z.array(z.string()).default([])
+    }))
+  })),
+  skills: z.array(z.object({
+    skill: z.string(),
+    category: z.string(),
+    requirementIds: z.array(z.string()).default([]),
+    evidence: z.array(evidenceReferenceSchema).default([]),
+    provenance: skillProvenanceSchema.default("explicit"),
+    sourceSkills: z.array(z.string()).default([])
+  })),
+  certifications: z.array(z.string()).default([]),
+  sectionOrder: z.array(z.string()).default([]),
+  pageTarget: z.enum(["one", "two"])
+});
+
+export const evaluationFindingSchema = z.object({
+  id: z.string(),
+  dimension: evalDimensionSchema,
+  status: evalStatusSchema,
+  label: z.string(),
+  detail: z.string(),
+  section: z.string().default(""),
+  sourceExperienceId: z.string().default("")
+});
+
+export const resumeEvaluationSchema = z.object({
+  evaluatorVersion: z.string().default("1"),
+  checks: z.array(evaluationFindingSchema).default([]),
+  scores: z.record(z.number()).default({}),
+  hardFailureIds: z.array(z.string()).default([])
+});
+
+export const pipelineMetadataSchema = z.object({
+  pipelineVersion: z.string().default("unified-v4"),
+  runId: z.string().default(""),
+  provider: z.string().default(""),
+  model: z.string().default(""),
+  legacyEngine: tailoringEngineSchema.optional(),
+  stages: z.array(z.object({
+    name: z.string(),
+    durationMs: z.number().nonnegative(),
+    attempts: z.number().int().positive().default(1),
+    inputTokens: z.number().int().nonnegative().optional(),
+    outputTokens: z.number().int().nonnegative().optional()
+  })).default([]),
+  aiCallCount: z.number().int().nonnegative().default(0),
+  repairCount: z.number().int().nonnegative().default(0),
+  recoveries: z.array(z.object({
+    code: z.string(),
+    section: z.string().default(""),
+    sourceExperienceId: z.string().default(""),
+    severity: z.enum(["corrected", "dropped", "degraded"]).default("corrected")
+  })).optional()
+});
+
 export const tailoredCvSchema = z.object({
   id: z.string(),
   baseProfileId: z.string(),
   job: jobDescriptionSchema,
-  outputLanguage: outputLanguageSchema,
   contact: contactSchema,
   summary: z.string(),
+  summaryClaims: z.array(summaryClaimSchema).default([]),
   experiences: z.array(tailoredExperienceSchema),
   education: educationArraySchema,
   skills: z.array(z.string()),
+  skillEvidence: z.array(skillEvidenceSchema).default([]),
   skillCategories: z.record(z.array(z.string())).default({}),
   certifications: z.array(z.string()).default([]),
   languages: z.array(languageSchema).default([]),
@@ -127,14 +328,23 @@ export const tailoredCvSchema = z.object({
   style: cvStyleSchema.default({}),
   dismissedChecks: z.array(z.string()).default([]),
   unsupportedClaims: z.array(unsupportedClaimSchema).default([]),
+  evidencePlan: evidencePlanSchema.optional(),
+  evaluation: resumeEvaluationSchema.optional(),
+  pipeline: pipelineMetadataSchema.default({}),
+  readiness: readinessStatusSchema.default("needs-source-update"),
   createdAt: z.string(),
   updatedAt: z.string()
 });
+
+// Lifecycle of a tailored application, set manually by the user from the home
+// table. Defaults to "not-sent" so existing stored records migrate cleanly.
+export const applicationStatusSchema = z.enum(["not-sent", "sent", "replied"]);
 
 export const applicationRecordSchema = z.object({
   id: z.string(),
   job: jobDescriptionSchema,
   tailoredCv: tailoredCvSchema,
+  status: applicationStatusSchema.default("not-sent"),
   createdAt: z.string(),
   updatedAt: z.string()
 });
@@ -145,6 +355,31 @@ export const regenerationRequestSchema = z.object({
   section: z.enum(["summary", "experience", "skills"]),
   experienceId: z.string().optional()
 });
+
+export const regenerationPatchSchema = z.discriminatedUnion("section", [
+  z.object({
+    section: z.literal("summary"),
+    summary: z.string(),
+    summaryClaims: z.array(summaryClaimSchema),
+    evaluation: resumeEvaluationSchema,
+    readiness: readinessStatusSchema
+  }),
+  z.object({
+    section: z.literal("experience"),
+    experienceId: z.string(),
+    experience: tailoredExperienceSchema,
+    evaluation: resumeEvaluationSchema,
+    readiness: readinessStatusSchema
+  }),
+  z.object({
+    section: z.literal("skills"),
+    skills: z.array(z.string()),
+    skillCategories: z.record(z.array(z.string())),
+    skillEvidence: z.array(skillEvidenceSchema),
+    evaluation: resumeEvaluationSchema,
+    readiness: readinessStatusSchema
+  })
+]);
 
 export const authSessionSchema = z.object({
   userId: z.string(),
@@ -166,6 +401,9 @@ export const tailoringJobSchema = z.object({
   status: z.enum(["running", "done", "error"]),
   error: z.string().default(""),
   cvId: z.string().default(""),
+  runId: z.string().default(""),
+  stage: z.string().default(""),
+  progress: z.number().min(0).max(100).default(0),
   // Stable identifier of the job this run belongs to (see `tailoringJobKey`), so
   // the popup can tell whether a stored running/done/error slot actually refers
   // to the job currently on screen — preventing a finished job from hijacking
@@ -176,8 +414,20 @@ export const tailoringJobSchema = z.object({
   startedAt: z.number().default(0)
 });
 
+export const tailoringRunStatusSchema = z.object({
+  id: z.string(),
+  status: z.enum(["queued", "running", "completed", "failed", "cancelled"]),
+  stage: z.enum(["queued", "planning", "writing", "validating", "critic", "repairing", "completed"]),
+  progress: z.number().min(0).max(100),
+  error: z.string().default(""),
+  cv: tailoredCvSchema.optional(),
+  evaluation: resumeEvaluationSchema.optional(),
+  createdAt: z.string(),
+  updatedAt: z.string()
+});
+
 export const storageStateSchema = z.object({
-  version: z.literal(1),
+  version: z.literal(2),
   profile: baseProfileSchema.nullable(),
   drafts: z.record(tailoredCvSchema),
   applications: z.array(applicationRecordSchema),
@@ -186,9 +436,14 @@ export const storageStateSchema = z.object({
   auth: authSessionSchema.nullable().default(null),
   settings: z.object({
     apiBaseUrl: z.string().default("https://api-76-13-177-250.sslip.io"),
-    aiProvider: aiProviderSchema.default("gemini-api"),
+    aiProvider: aiProviderSchema.default("groq-api"),
+    providerDefaultMigrated: z.boolean().default(false),
     tailoringEngine: tailoringEngineSchema.default("builtin"),
     onboardingComplete: z.boolean().default(false),
+    // The onboarding view the user last reached (e.g. "summary", "experience").
+    // Non-empty while a setup is in progress so the router can resume it after a
+    // refresh; cleared back to "" when onboarding finishes.
+    onboardingStep: z.string().default(""),
     welcomeSeen: z.boolean().default(false),
     pinScreenSeen: z.boolean().default(false),
     inlineEditHintSeen: z.boolean().default(false),
@@ -197,10 +452,21 @@ export const storageStateSchema = z.object({
 });
 
 export type EducationEntry = z.infer<typeof educationEntrySchema>;
+export type Project = z.infer<typeof projectSchema>;
 export type BaseProfile = z.infer<typeof baseProfileSchema>;
 export type JobDescription = z.infer<typeof jobDescriptionSchema>;
 export type TailoredCv = z.infer<typeof tailoredCvSchema>;
+export type TailoredExperience = z.infer<typeof tailoredExperienceSchema>;
+export type TailoredBullet = TailoredExperience["bullets"][number];
+export type EvidencePlan = z.infer<typeof evidencePlanSchema>;
+export type SummaryEvidenceReference = z.infer<typeof summaryEvidenceReferenceSchema>;
+export type SkillProvenance = z.infer<typeof skillProvenanceSchema>;
+export type ResumeEvaluation = z.infer<typeof resumeEvaluationSchema>;
+export type EvaluationFinding = z.infer<typeof evaluationFindingSchema>;
+export type RegenerationPatch = z.infer<typeof regenerationPatchSchema>;
+export type TailoringRunStatus = z.infer<typeof tailoringRunStatusSchema>;
 export type ApplicationRecord = z.infer<typeof applicationRecordSchema>;
+export type ApplicationStatus = z.infer<typeof applicationStatusSchema>;
 export type RegenerationRequest = z.infer<typeof regenerationRequestSchema>;
 export type StorageState = z.infer<typeof storageStateSchema>;
 export type AuthSession = z.infer<typeof authSessionSchema>;
@@ -213,7 +479,7 @@ export type Positioning = z.infer<typeof positioningSchema>;
 export type CvStyle = z.infer<typeof cvStyleSchema>;
 
 export const emptyStorageState = (): StorageState => ({
-  version: 1,
+  version: 2,
   profile: null,
   drafts: {},
   applications: [],
@@ -222,9 +488,11 @@ export const emptyStorageState = (): StorageState => ({
   auth: null,
   settings: {
     apiBaseUrl: "http://127.0.0.1:8787",
-    aiProvider: "gemini-api",
-    tailoringEngine: "ccc",
+    aiProvider: "groq-api",
+    providerDefaultMigrated: true,
+    tailoringEngine: "builtin",
     onboardingComplete: false,
+    onboardingStep: "",
     welcomeSeen: false,
     pinScreenSeen: false,
     inlineEditHintSeen: false,
@@ -236,21 +504,66 @@ const VPS_API_URL = "https://api-76-13-177-250.sslip.io";
 const LOCAL_URL = "http://127.0.0.1:8787";
 
 export function migrateStorage(input: unknown): StorageState {
-  const parsed = storageStateSchema.safeParse(input);
+  const candidate = input && typeof input === "object"
+    ? { ...(input as Record<string, unknown>), version: 2 }
+    : input;
+  const parsed = storageStateSchema.safeParse(candidate);
   const state = parsed.success ? parsed.data : emptyStorageState();
   // Temporarily remapping to local for dev testing — swap back when pointing at VPS again.
   if (state.settings.apiBaseUrl === VPS_API_URL) {
     state.settings.apiBaseUrl = LOCAL_URL;
   }
-  // Codex CLI is no longer supported — fall back to Gemini.
-  if (state.settings.aiProvider === "codex-local") {
-    state.settings.aiProvider = "gemini-api";
+  // Apply the new Groq default once to existing installs. The marker preserves
+  // later explicit provider choices made in Advanced settings.
+  if (!state.settings.providerDefaultMigrated) {
+    if (state.settings.aiProvider === "codex-local" || state.settings.aiProvider === "gemini-api") {
+      state.settings.aiProvider = "groq-api";
+    }
+    state.settings.providerDefaultMigrated = true;
   }
   return state;
 }
 
 export function makeId(prefix: string): string {
   return `${prefix}_${crypto.randomUUID()}`;
+}
+
+export function bulletText(bullet: string | TailoredBullet): string {
+  return typeof bullet === "string" ? bullet : bullet.text;
+}
+
+export function legacyBulletTexts(bullets: Array<string | TailoredBullet>): string[] {
+  return bullets.map(bulletText);
+}
+
+export function markTailoredTextStale(cv: TailoredCv, section: "summary" | "experience" | "skills", experienceId?: string): TailoredCv {
+  if (section === "summary") {
+    return {
+      ...cv,
+      summaryClaims: cv.summaryClaims.map((claim) => ({ ...claim, evidenceStatus: "stale" })),
+      readiness: "blocked"
+    };
+  }
+  if (section === "skills") {
+    return {
+      ...cv,
+      skillEvidence: cv.skillEvidence.map((skill) => ({ ...skill, evidenceStatus: "stale" })),
+      readiness: "blocked"
+    };
+  }
+  return {
+    ...cv,
+    experiences: cv.experiences.map((experience) => experience.id === experienceId
+      ? {
+        ...experience,
+        titleEvidenceStatus: "needs-review",
+        bullets: experience.bullets.map((bullet, index) => typeof bullet === "string"
+          ? { id: `edited_bullet_${index}`, text: bullet, sourceBulletIndexes: [], evidenceStatus: "stale" as const }
+          : { ...bullet, evidenceStatus: "stale" as const })
+      }
+      : experience),
+    readiness: "blocked"
+  };
 }
 
 // Stable key identifying a job across the popup and background worker, so a
@@ -295,6 +608,18 @@ export function bulletHasMetric(text: string): boolean {
   return /\d/.test(text);
 }
 
+export function missingStructuredProfileEvidence(profile: BaseProfile): Array<"certifications" | "languages"> {
+  const raw = profile.rawText || "";
+  const gaps: Array<"certifications" | "languages"> = [];
+  if (!profile.certifications.length && /\b(certifications?|acca|cpa|chartered accountant|udemy|linkedin learning)\b/i.test(raw)) {
+    gaps.push("certifications");
+  }
+  if (!profile.languages.length && /\b(languages?|native|fluent|proficient|bilingual|[abc][12])\b/i.test(raw)) {
+    gaps.push("languages");
+  }
+  return gaps;
+}
+
 // True when an education entry has any real content — used to filter out empty
 // editing rows from the rendered resume, the export, and completeness checks.
 export function educationHasContent(entry: EducationEntry): boolean {
@@ -326,10 +651,24 @@ export function formatEducationEntry(entry: EducationEntry): { title: string; su
 // sectionOrder, and dismissedChecks — always survive.
 export function applyRegeneratedSection(
   current: TailoredCv,
-  regenerated: TailoredCv,
+  regenerated: TailoredCv | RegenerationPatch,
   section: "summary" | "experience" | "skills",
   experienceId?: string
 ): TailoredCv {
+  if ("section" in regenerated) {
+    if (regenerated.section === "summary") {
+      return { ...current, summary: regenerated.summary, summaryClaims: regenerated.summaryClaims, evaluation: regenerated.evaluation, readiness: regenerated.readiness };
+    }
+    if (regenerated.section === "skills") {
+      return { ...current, skills: regenerated.skills, skillCategories: regenerated.skillCategories, skillEvidence: regenerated.skillEvidence, evaluation: regenerated.evaluation, readiness: regenerated.readiness };
+    }
+    return {
+      ...current,
+      experiences: current.experiences.map((experience) => experience.id === regenerated.experienceId ? regenerated.experience : experience),
+      evaluation: regenerated.evaluation,
+      readiness: regenerated.readiness
+    };
+  }
   if (section === "summary") {
     return { ...current, summary: regenerated.summary };
   }

@@ -98,7 +98,7 @@ export function createLinkedInDialog(onVisibilityChange?: (visible: boolean) => 
   async function saveGeneratedCv(cv: TailoredCv) {
     if (!job) return;
     const record: ApplicationRecord = {
-      id: makeId("application"), job, tailoredCv: cv,
+      id: makeId("application"), job, tailoredCv: cv, status: "not-sent",
       createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
     };
     await updateState((current) => ({

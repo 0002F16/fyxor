@@ -9,12 +9,59 @@ export type GenerateInput<T> = {
 };
 
 export interface Generator {
+  lastUsage?: { inputTokens?: number; outputTokens?: number };
   generate<T>(input: GenerateInput<T>): Promise<T>;
 }
 
 // Per-request cap so a hung provider fails with a clear error instead of
 // holding the Express request (and the extension popup) open indefinitely.
 export const LLM_TIMEOUT_MS = 120_000;
+
+export function normalizeStructuredOutput(name: string, value: unknown): unknown {
+  if (name !== "evidence_plan" || !value || typeof value !== "object") return value;
+  const plan = value as Record<string, unknown>;
+  if (!Array.isArray(plan.requirements)) return value;
+  plan.requirements = plan.requirements.map((entry) => {
+    if (!entry || typeof entry !== "object") return entry;
+    const requirement = { ...(entry as Record<string, unknown>) };
+    const importance = typeof requirement.hiringImportance === "number"
+      ? Math.max(1, Math.min(5, Math.round(requirement.hiringImportance)))
+      : 3;
+    requirement.hiringImportance = importance;
+    requirement.summaryValue = typeof requirement.summaryValue === "number"
+      ? Math.max(1, Math.min(5, Math.round(requirement.summaryValue)))
+      : Math.min(5, importance);
+    requirement.priority = ["must", "important", "supporting"].includes(String(requirement.priority))
+      ? requirement.priority
+      : importance >= 5 ? "must" : importance >= 3 ? "important" : "supporting";
+    const typeAliases: Record<string, string> = {
+      skill: "competency",
+      general: "competency",
+      experience: "function",
+      years_experience: "seniority",
+      work_authorization: "authorization",
+      credential: "certification",
+      cert: "certification"
+    };
+    const type = typeAliases[String(requirement.type)] || requirement.type;
+    requirement.type = [
+      "function", "industry", "seniority", "language", "certification", "license",
+      "tool", "education", "authorization", "competency", "other"
+    ].includes(String(type)) ? type : "other";
+    const coverageAliases: Record<string, string> = {
+      supported: "supported-equivalent",
+      partial: "supported-equivalent",
+      inferred: "supported-equivalent",
+      none: "unsupported"
+    };
+    const coverage = coverageAliases[String(requirement.coverage)] || requirement.coverage;
+    requirement.coverage = ["explicit", "supported-equivalent", "unsupported"].includes(String(coverage))
+      ? coverage
+      : "unsupported";
+    return requirement;
+  });
+  return plan;
+}
 
 export function zodToJsonSchema(schema: z.ZodTypeAny): Record<string, unknown> {
   const definition = schema._def;
@@ -47,6 +94,7 @@ export function zodToJsonSchema(schema: z.ZodTypeAny): Record<string, unknown> {
 }
 
 export class OpenAIGenerator implements Generator {
+  lastUsage?: { inputTokens?: number; outputTokens?: number };
   private client: OpenAI;
   private model: string;
 
@@ -72,6 +120,10 @@ export class OpenAIGenerator implements Generator {
         }
       }
     }, { timeout: LLM_TIMEOUT_MS });
-    return schema.parse(JSON.parse(response.output_text));
+    this.lastUsage = {
+      inputTokens: response.usage?.input_tokens,
+      outputTokens: response.usage?.output_tokens
+    };
+    return schema.parse(normalizeStructuredOutput(name, JSON.parse(response.output_text)));
   }
 }

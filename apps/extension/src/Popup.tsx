@@ -54,7 +54,7 @@ export function Popup() {
       // spinner the user can never escape.
       const tj = stored.tailoringJob;
       if (tj?.status === "running" && Date.now() - (tj.startedAt || 0) > STALE_MS) {
-        const errored = { status: "error" as const, error: "Tailoring took too long or was interrupted. Please try again.", cvId: "", jobKey: tj.jobKey, startedAt: 0 };
+        const errored = { status: "error" as const, error: "Tailoring took too long or was interrupted. Please try again.", cvId: "", runId: tj.runId, stage: "", progress: 0, jobKey: tj.jobKey, startedAt: 0 };
         stored = { ...stored, tailoringJob: errored };
         void setTailoringJob(errored);
       }
@@ -132,7 +132,19 @@ export function Popup() {
   // different, freshly selected job.
   const activeTailoring = activeTailoringFor(tailoringJob, job);
   const busy = startingTailoring || activeTailoring?.status === "running";
-  const tailorStage = useStagedProgress(busy, TAILOR_STAGES);
+  const serverStage: Record<string, string> = {
+    queued: "Queued…",
+    planning: "Planning evidence…",
+    writing: "Writing your CV…",
+    validating: "Checking factual support…",
+    critic: "Reviewing quality…",
+    repairing: "Repairing flagged content…",
+    completed: "Finalizing…"
+  };
+  const fallbackStage = useStagedProgress(busy, TAILOR_STAGES);
+  const tailorStage = activeTailoring?.stage
+    ? (serverStage[activeTailoring.stage] || activeTailoring.stage)
+    : fallbackStage;
 
   if (!state) return <div className="popup-loading"><LoaderCircle className="animate-spin" size={18} /> Loading Fyxor...</div>;
 
