@@ -10,8 +10,20 @@ import {
   syncPayloadSchema,
   tailoredCvSchema
 } from "@cv-tailor/shared";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { auth } from "./auth.js";
-import { monthlyUsage, pool, recordUsage, releaseUsage, reserveTailor } from "./db.js";
+import {
+  adminUsageSummary,
+  listUsers,
+  monthlyUsage,
+  pool,
+  recordUsage,
+  releaseUsage,
+  reserveTailor,
+  userDetail
+} from "./db.js";
 import type { Generator } from "./openai.js";
 import { createGenerator, providerStatus, resolveProvider } from "./providers.js";
 import { categorizeSkillsPrompt, extractionPrompt, regenerationPrompt, tailoringPrompt } from "./prompts.js";
@@ -34,6 +46,36 @@ const asyncRoute = (fn: express.RequestHandler): express.RequestHandler =>
   (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 
 type AuthedRequest = express.Request & { userId: string };
+
+// Tailoring failures store the raw thrown error (often a Zod issues-array JSON
+// blob) so the admin dashboard keeps technical detail. The extension must never
+// see that — replace any technical-looking error with a friendly retry message
+// when serializing tailoring runs to the extension. Admin endpoints are not run
+// through this, so they keep the raw detail.
+const GENERIC_TAILORING_ERROR =
+  "We couldn't finish tailoring this CV. This usually works on a second try — please tailor again.";
+
+function looksTechnical(message: string): boolean {
+  const trimmed = message.trim();
+  if (trimmed.startsWith("[") || trimmed.startsWith("{")) return true;
+  return /invalid_type|ZodError|received \w+|\bpath\b.*\bmessage\b/.test(trimmed);
+}
+
+export function clientRun<T extends { status?: string; error?: string }>(run: T): T {
+  if (!run?.error) return run;
+  if (run.status === "cancelled") return run; // keep "Tailoring cancelled"
+  if (!looksTechnical(run.error)) return run; // keep already-friendly text
+  return { ...run, error: GENERIC_TAILORING_ERROR };
+}
+
+// Comma-separated allowlist of admin emails (lowercased). Read once at load.
+// An account is an admin purely by being listed here — no DB role column.
+const ADMIN_EMAILS = new Set(
+  (process.env.ADMIN_EMAILS || "")
+    .split(",")
+    .map((e) => e.trim().toLowerCase())
+    .filter(Boolean)
+);
 
 function generatorOrThrow(req: express.Request, factory?: () => Generator): Generator {
   return factory ? factory() : createGenerator(resolveProvider(req.header("x-ai-provider") || process.env.AI_PROVIDER));
@@ -60,6 +102,9 @@ export function createApp(generatorFactory?: () => Generator) {
   const testMode = Boolean(generatorFactory);
 
   app.use(cors({
+    // chrome-extension + local dev. The admin SPA is same-origin (served by
+    // this API) so it doesn't need its own entry; the sslip.io prod URL is
+    // covered by the same-origin policy automatically.
     origin: /^(chrome-extension:\/\/|http:\/\/127\.0\.0\.1|http:\/\/localhost)/,
     allowedHeaders: ["Content-Type", "Authorization", "x-ai-provider", "x-tailoring-engine"],
     // The extension reads the bearer token from this header after sign-in.
@@ -88,6 +133,22 @@ export function createApp(generatorFactory?: () => Generator) {
     try {
       const session = await auth.api.getSession({ headers: fromNodeHeaders(req.headers) });
       if (!session?.user) return res.status(401).json({ error: "Sign in required" });
+      (req as AuthedRequest).userId = session.user.id;
+      next();
+    } catch (error) { next(error); }
+  };
+
+  // Gates the admin dashboard API: a valid session whose email is in the
+  // ADMIN_EMAILS allowlist. Mirrors requireAuth's session resolution; returns
+  // 403 (not 401) for a signed-in but non-admin user so the UI can distinguish.
+  const requireAdmin: express.RequestHandler = async (req, res, next) => {
+    if (testMode) { (req as AuthedRequest).userId = "test-admin"; return next(); }
+    try {
+      const session = await auth.api.getSession({ headers: fromNodeHeaders(req.headers) });
+      if (!session?.user) return res.status(401).json({ error: "Sign in required" });
+      if (!ADMIN_EMAILS.has((session.user.email || "").toLowerCase())) {
+        return res.status(403).json({ error: "Admin access required" });
+      }
       (req as AuthedRequest).userId = session.user.id;
       next();
     } catch (error) { next(error); }
@@ -249,19 +310,19 @@ export function createApp(generatorFactory?: () => Generator) {
       generatorFactory,
       freeMonthlyLimit: Number(process.env.FREE_MONTHLY_TAILORS || 0)
     });
-    res.status(202).json(run);
+    res.status(202).json(clientRun(run));
   }));
 
   app.get("/api/tailoring-runs/:id", requireAuth, asyncRoute(async (req, res) => {
     const run = await getTailoringRun(String(req.params.id), (req as AuthedRequest).userId, testMode);
     if (!run) return res.status(404).json({ error: "Tailoring run not found" });
-    res.json(run);
+    res.json(clientRun(run));
   }));
 
   app.delete("/api/tailoring-runs/:id", requireAuth, asyncRoute(async (req, res) => {
     const run = await cancelTailoringRun(String(req.params.id), (req as AuthedRequest).userId, testMode);
     if (!run) return res.status(404).json({ error: "Tailoring run not found" });
-    res.json(run);
+    res.json(clientRun(run));
   }));
 
   app.post("/api/cvs/regenerate", requireAuth, asyncRoute(async (req, res) => {
@@ -381,6 +442,42 @@ export function createApp(generatorFactory?: () => Generator) {
     res.setHeader("Content-Disposition", `attachment; filename="${safeSegment(cv.job.company || "tailored")}-${safeSegment(cv.job.title || "cv")}.${format}"`);
     res.send(buffer);
   }));
+
+  // --- Admin dashboard API (read-only, allowlist-gated) ---------------------
+
+  app.get("/api/admin/summary", requireAdmin, asyncRoute(async (_req, res) => {
+    res.json(await adminUsageSummary());
+  }));
+
+  app.get("/api/admin/users", requireAdmin, asyncRoute(async (req, res) => {
+    const search = typeof req.query.search === "string" ? req.query.search : undefined;
+    const limit = req.query.limit != null ? Number(req.query.limit) : undefined;
+    const offset = req.query.offset != null ? Number(req.query.offset) : undefined;
+    res.json({ users: await listUsers({ search, limit, offset }) });
+  }));
+
+  app.get("/api/admin/users/:id", requireAdmin, asyncRoute(async (req, res) => {
+    const detail = await userDetail(String(req.params.id));
+    if (!detail.user) return res.status(404).json({ error: "User not found" });
+    res.json(detail);
+  }));
+
+  // --- Admin SPA static hosting (served under /admin) ------------------------
+  // Resolve relative to this source file (apps/api/src/app.ts → apps/admin/dist)
+  // so the path is correct regardless of what cwd PM2 or npm uses. Override
+  // with ADMIN_DIST env var when needed.
+  // dist layout: apps/api/dist/apps/api/src/app.js → 6 levels up = repo root
+  const adminDist =
+    process.env.ADMIN_DIST ||
+    path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../../../../apps/admin/dist");
+  if (fs.existsSync(adminDist)) {
+    app.use("/admin", express.static(adminDist));
+    // SPA fallback: any /admin/* path that didn't match a static asset returns
+    // index.html. Express 5 path syntax rejects a bare "*", so match via regex.
+    app.get(/^\/admin(?:\/.*)?$/, (_req, res) => {
+      res.sendFile(path.join(adminDist, "index.html"));
+    });
+  }
 
   app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
     const message = error instanceof Error ? error.message : "Unknown error";

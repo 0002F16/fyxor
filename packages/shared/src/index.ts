@@ -142,6 +142,14 @@ export const evidenceReferenceSchema = z.object({
   sourceBulletIndexes: z.array(z.number().int().nonnegative()).default([])
 });
 
+// LLM evidence-plan output occasionally returns an evidence array as a single
+// object. Coerce a lone object into a one-element array so one stray shape never
+// hard-fails an otherwise-valid tailoring run.
+const coerceToArray = (val: unknown): unknown =>
+  Array.isArray(val) ? val : val && typeof val === "object" ? [val] : [];
+const evidenceArray = <T extends z.ZodTypeAny>(item: T) =>
+  z.preprocess(coerceToArray, z.array(item));
+
 // Summary evidence can come from the complete profile, not only experience
 // bullets. A single object shape keeps strict provider JSON schemas portable;
 // fields not used by the selected `kind` remain empty.
@@ -217,14 +225,14 @@ export const evidencePlanSchema = z.object({
     hiringImportance: z.number().int().min(1).max(5).optional(),
     summaryValue: z.number().int().min(1).max(5).optional(),
     coverage: requirementCoverageSchema.default("unsupported"),
-    evidence: z.array(evidenceReferenceSchema).default([]),
-    summaryEvidence: z.array(summaryEvidenceReferenceSchema).optional(),
+    evidence: evidenceArray(evidenceReferenceSchema).default([]),
+    summaryEvidence: evidenceArray(summaryEvidenceReferenceSchema).optional(),
     sourceSkills: z.array(z.string()).default([])
   })),
   summaryClaims: z.array(z.object({
     id: z.string(),
     objective: z.string(),
-    evidence: z.array(summaryEvidenceReferenceSchema),
+    evidence: evidenceArray(summaryEvidenceReferenceSchema),
     requirementIds: z.array(z.string()).optional(),
     mandatory: z.boolean().optional(),
     provenance: z.enum(["explicit", "equivalent", "inferred-context"]).optional()
@@ -248,7 +256,7 @@ export const evidencePlanSchema = z.object({
     include: z.boolean(),
     originalTitle: z.string(),
     proposedTitle: z.string(),
-    titleEvidence: z.array(evidenceReferenceSchema).default([]),
+    titleEvidence: evidenceArray(evidenceReferenceSchema).default([]),
     titleConfidence: z.enum(["high", "medium", "low"]),
     bulletObjectives: z.array(z.object({
       id: z.string(),
@@ -261,7 +269,7 @@ export const evidencePlanSchema = z.object({
     skill: z.string(),
     category: z.string(),
     requirementIds: z.array(z.string()).default([]),
-    evidence: z.array(evidenceReferenceSchema).default([]),
+    evidence: evidenceArray(evidenceReferenceSchema).default([]),
     provenance: skillProvenanceSchema.default("explicit"),
     sourceSkills: z.array(z.string()).default([])
   })),
@@ -431,6 +439,7 @@ export const storageStateSchema = z.object({
   profile: baseProfileSchema.nullable(),
   drafts: z.record(tailoredCvSchema),
   applications: z.array(applicationRecordSchema),
+  resumeVariants: z.array(tailoredCvSchema).default([]),
   pendingJob: jobDescriptionSchema.nullable().default(null),
   tailoringJob: tailoringJobSchema.nullable().default(null),
   auth: authSessionSchema.nullable().default(null),
@@ -447,7 +456,9 @@ export const storageStateSchema = z.object({
     welcomeSeen: z.boolean().default(false),
     pinScreenSeen: z.boolean().default(false),
     inlineEditHintSeen: z.boolean().default(false),
-    resumeStrengthHidden: z.boolean().default(false)
+    resumeStrengthHidden: z.boolean().default(false),
+    // Which Applications layout the user last chose. Device-local, not synced.
+    trackerView: z.enum(["list", "board"]).default("list")
   })
 });
 
@@ -483,6 +494,7 @@ export const emptyStorageState = (): StorageState => ({
   profile: null,
   drafts: {},
   applications: [],
+  resumeVariants: [],
   pendingJob: null,
   tailoringJob: null,
   auth: null,
@@ -496,7 +508,8 @@ export const emptyStorageState = (): StorageState => ({
     welcomeSeen: false,
     pinScreenSeen: false,
     inlineEditHintSeen: false,
-    resumeStrengthHidden: false
+    resumeStrengthHidden: false,
+    trackerView: "list"
   }
 });
 
@@ -509,10 +522,6 @@ export function migrateStorage(input: unknown): StorageState {
     : input;
   const parsed = storageStateSchema.safeParse(candidate);
   const state = parsed.success ? parsed.data : emptyStorageState();
-  // Temporarily remapping to local for dev testing — swap back when pointing at VPS again.
-  if (state.settings.apiBaseUrl === VPS_API_URL) {
-    state.settings.apiBaseUrl = LOCAL_URL;
-  }
   // Apply the new Groq default once to existing installs. The marker preserves
   // later explicit provider choices made in Advanced settings.
   if (!state.settings.providerDefaultMigrated) {
@@ -699,6 +708,61 @@ export function effectiveSectionOrder(order: string[] = []): SectionId[] {
   const known = order.filter((id): id is SectionId => (SECTION_IDS as readonly string[]).includes(id));
   const seen = new Set(known);
   return [...known, ...DEFAULT_SECTION_ORDER.filter((id) => !seen.has(id))];
+}
+
+// Build a minimal JobDescription from a bare target-role string so the tailoring
+// pipeline has something to optimise against when there's no full job posting.
+export function synthesizeRoleJob(role: string): JobDescription {
+  return jobDescriptionSchema.parse({
+    title: role,
+    company: "",
+    location: "",
+    description: `Target role: ${role}`,
+    url: "",
+    source: "manual"
+  });
+}
+
+// Convert a BaseProfile into a minimal TailoredCv so the export endpoint (which
+// only accepts TailoredCv) can render the untailored base resume as a PDF/DOCX.
+// Uses schema defaults for all pipeline/evidence fields; pageTarget is absent
+// so the server allows up to 2 pages.
+export function baseProfileToExportCv(profile: BaseProfile): TailoredCv {
+  const now = profile.updatedAt;
+  return tailoredCvSchema.parse({
+    id: makeId("cv"),
+    baseProfileId: profile.id,
+    job: synthesizeRoleJob(profile.targetRole || "Resume"),
+    contact: profile.contact,
+    summary: profile.summary,
+    summaryClaims: [],
+    experiences: profile.experiences.map((exp) => ({
+      ...exp,
+      sourceExperienceId: exp.id,
+      originalRole: exp.role,
+      titleEvidenceStatus: "unchanged",
+      bullets: exp.bullets.map((text, i) => ({
+        id: `base_bullet_${i}`,
+        text: String(text),
+        sourceBulletIndexes: [],
+        evidenceStatus: "legacy-unverified"
+      }))
+    })),
+    education: profile.education,
+    skills: profile.skills,
+    skillEvidence: [],
+    skillCategories: profile.skillCategories,
+    certifications: profile.certifications,
+    languages: profile.languages,
+    sectionOrder: profile.sectionOrder,
+    style: profile.style,
+    dismissedChecks: profile.dismissedChecks ?? [],
+    unsupportedClaims: [],
+    pipeline: {},
+    readiness: "ready",
+    createdAt: now,
+    updatedAt: now
+  });
 }
 
 // ---------------------------------------------------------------------------

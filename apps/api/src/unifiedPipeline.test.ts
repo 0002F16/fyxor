@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { BaseProfile, JobDescription } from "@cv-tailor/shared";
 import type { Generator } from "./openai";
+import { evidencePlanSchema } from "@cv-tailor/shared";
 import { generateUnifiedCv, sanitizeEvidencePlan, validateEvidencePlan, validateWriterOutput } from "./unifiedPipeline";
 
 const profile: BaseProfile = {
@@ -234,7 +235,11 @@ describe("unified evidence-first pipeline", () => {
       ]
     }, profile);
 
-    expect(result.plan.skills.map((skill) => skill.skill)).toEqual(["TypeScript", "API Design"]);
+    const sanitizedSkillNames = result.plan.skills.map((skill) => skill.skill);
+    // The unsupported "Kubernetes" entry is dropped, source skills are retained,
+    // and the looser pipeline tops up with inferred baselines (incl. Excel).
+    expect(sanitizedSkillNames).toEqual(expect.arrayContaining(["TypeScript", "API Design", "Microsoft Excel"]));
+    expect(sanitizedSkillNames).not.toContain("Kubernetes");
     expect(result.plan.summaryClaims.map((claim) => claim.id)).toEqual(["claim-1"]);
     expect(result.recoveries).toEqual(expect.arrayContaining([
       expect.objectContaining({ code: "unsupported-skill-dropped" }),
@@ -261,7 +266,7 @@ describe("unified evidence-first pipeline", () => {
 
     expect(cv.experiences[0]?.role).toBe("Backend Developer");
     expect(cv.experiences[0]?.bullets[0]?.text).toBe(profile.experiences[0]?.bullets[0]);
-    expect(cv.skills).toEqual(["TypeScript", "API Design"]);
+    expect(cv.skills).toEqual(expect.arrayContaining(["TypeScript", "API Design"]));
     expect(cv.summary).toContain("12 internal teams");
     expect(cv.readiness).toBe("ready");
   });
@@ -540,5 +545,117 @@ describe("unified evidence-first pipeline", () => {
       }]
     }, result.plan, profile, { ...job, title: "KYC Analyst" });
     expect(findings).toContain("Writer reused the generic base summary despite job-specific summary evidence");
+  });
+
+  it("splits a compound base-skill blob and fills out a thin accounting profile", () => {
+    const blobProfile: BaseProfile = {
+      ...profile,
+      targetRole: "AP Accountant",
+      summary: "Accounting associate handling payables and account reconciliations.",
+      experiences: [{
+        id: "source-1",
+        company: "Acme",
+        role: "Accounting Associate",
+        startDate: "2023",
+        endDate: "Present",
+        bullets: ["Reconciled account statements in SAP and processed supplier invoices."]
+      }],
+      skills: ["SAP (AR/AP, Account Statements, Oracle Financials (Training), Report Extraction)"],
+      skillCategories: { Skills: ["SAP (AR/AP, Account Statements, Oracle Financials (Training), Report Extraction)"] }
+    };
+    const apJob: JobDescription = {
+      ...job,
+      title: "AP Accountant",
+      description: "Process supplier invoices, reconcile accounts payable, and support month-end close."
+    };
+    const names = sanitizeEvidencePlan(plan, blobProfile, apJob).plan.skills.map((skill) => skill.skill);
+
+    // Compound blob is split into distinct source skills.
+    expect(names).toEqual(expect.arrayContaining([
+      "SAP", "AR/AP", "Account Statements", "Oracle Financials", "Report Extraction"
+    ]));
+    // Excel is added even though the JD never says "excel".
+    expect(names).toContain("Microsoft Excel");
+    // Accounting-domain inferences are seeded from the target role.
+    expect(names).toEqual(expect.arrayContaining(["Reconciliations", "Month-End Close"]));
+    // Not the single-skill collapse the bug produced.
+    expect(names.length).toBeGreaterThanOrEqual(12);
+  });
+
+  it("bridges an accounting profile into a data-analysis target", () => {
+    const analystJob: JobDescription = {
+      ...job,
+      title: "Data Analyst",
+      description: "Analyze datasets, build dashboards and reporting, and surface business insights."
+    };
+    const accountingSource: BaseProfile = {
+      ...profile,
+      targetRole: "Data Analyst",
+      summary: "Accountant who reconciles ledgers and prepares financial reporting.",
+      experiences: [{
+        id: "source-1",
+        company: "Acme",
+        role: "Accountant",
+        startDate: "2022",
+        endDate: "Present",
+        bullets: ["Reconciled the general ledger and prepared monthly financial reporting."]
+      }],
+      skills: ["Account Reconciliation", "Financial Reporting", "Advanced Excel"],
+      skillCategories: { Skills: ["Account Reconciliation", "Financial Reporting", "Advanced Excel"] }
+    };
+    const names = sanitizeEvidencePlan(plan, accountingSource, analystJob).plan.skills.map((skill) => skill.skill);
+
+    // Target-domain / bridge skills appear for the move into data analysis.
+    expect(names).toEqual(expect.arrayContaining(["SQL", "Data Visualization", "Data Analysis"]));
+    // Transferable source skills are retained.
+    expect(names).toContain("Advanced Excel");
+  });
+
+  it("bridges an admin/psychology profile into a KYC/AML target", () => {
+    const kycJob: JobDescription = {
+      ...job,
+      title: "KYC/AML Analyst",
+      description: "Perform customer due diligence, transaction monitoring and sanctions screening for compliance."
+    };
+    const adminSource: BaseProfile = {
+      ...profile,
+      targetRole: "KYC/AML Analyst",
+      summary: "Administrative coordinator with psychology background and strong documentation skills.",
+      experiences: [{
+        id: "source-1",
+        company: "Acme",
+        role: "Administrative Coordinator",
+        startDate: "2022",
+        endDate: "Present",
+        bullets: ["Managed records, scheduling and stakeholder coordination across teams."]
+      }],
+      skills: ["Records Management", "Stakeholder Coordination", "Report Writing"],
+      skillCategories: { Skills: ["Records Management", "Stakeholder Coordination", "Report Writing"] }
+    };
+    const names = sanitizeEvidencePlan(plan, adminSource, kycJob).plan.skills.map((skill) => skill.skill);
+
+    expect(names).toEqual(expect.arrayContaining([
+      "KYC", "AML", "Customer Due Diligence", "Risk Assessment"
+    ]));
+  });
+});
+
+describe("evidencePlanSchema evidence-array coercion", () => {
+  it("accepts a single object where titleEvidence/evidence should be an array", () => {
+    const ref = { sourceExperienceId: "source-1", sourceBulletIndexes: [0] };
+    const looseplan = {
+      ...plan,
+      requirements: [{ ...plan.requirements[0], evidence: ref }],
+      summaryClaims: [{ ...plan.summaryClaims[0], evidence: ref }],
+      roles: [{ ...plan.roles[0], titleEvidence: ref }],
+      skills: [{ ...plan.skills[0], evidence: ref }]
+    };
+
+    const parsed = evidencePlanSchema.parse(looseplan);
+
+    expect(parsed.roles[0]?.titleEvidence).toEqual([ref]);
+    expect(parsed.requirements[0]?.evidence).toEqual([ref]);
+    expect(parsed.summaryClaims[0]?.evidence).toEqual([ref]);
+    expect(parsed.skills[0]?.evidence).toEqual([ref]);
   });
 });

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { createApp } from "./app";
+import { clientRun, createApp } from "./app";
 import type { Generator } from "./openai";
 
 process.env.ENABLE_LEGACY_ENGINES = "true";
@@ -312,5 +312,30 @@ describe("API routes", () => {
     expect(response.status).toBe(409);
     const body = await response.json();
     expect(body.findings.map((finding: { id: string }) => finding.id)).toContain("bullet-citations");
+  });
+});
+
+describe("clientRun error sanitization", () => {
+  it("replaces a raw Zod issues-array error with a friendly retry message", () => {
+    const raw = '[{"code":"invalid_type","expected":"array","received":"object","path":["roles",0,"titleEvidence"],"message":"Expected array, received object"}]';
+    const result = clientRun({ status: "failed", error: raw });
+    expect(result.error).not.toContain("invalid_type");
+    expect(result.error).toMatch(/tailor again/i);
+  });
+
+  it("keeps the cancelled message untouched", () => {
+    const result = clientRun({ status: "cancelled", error: "Tailoring cancelled" });
+    expect(result.error).toBe("Tailoring cancelled");
+  });
+
+  it("passes an already-friendly message through unchanged", () => {
+    const friendly = "Free monthly tailoring limit reached.";
+    const result = clientRun({ status: "failed", error: friendly });
+    expect(result.error).toBe(friendly);
+  });
+
+  it("leaves a run without an error untouched", () => {
+    const result = clientRun({ status: "completed", error: undefined });
+    expect(result.error).toBeUndefined();
   });
 });

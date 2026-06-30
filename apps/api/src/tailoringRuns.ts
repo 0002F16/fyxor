@@ -167,6 +167,7 @@ async function executeRun(
     const cancelled = run.cancelRequested || (error instanceof Error && error.message === "Tailoring cancelled");
     run.status = cancelled ? "cancelled" : "failed";
     run.error = cancelled ? "Tailoring cancelled" : error instanceof Error ? error.message : String(error);
+    if (!cancelled) console.error(`Tailoring run ${run.id} failed:`, error);
     run.updatedAt = new Date().toISOString();
     await persist(run, testMode);
     if (!testMode && run.usageEventId) {

@@ -17,6 +17,17 @@ import { sendLinkedInMessage } from "./linkedinMessaging";
 // isn't falsely flagged as orphaned; matches background STALE_TAILORING_MS.
 const STALE_MS = 16 * 60 * 1000;
 
+// Defense-in-depth: the API already sanitizes tailoring-run errors, but a stale
+// raw (JSON-ish) error can linger in chrome.storage from a previous version.
+// Never render a technical-looking blob to the user.
+function showError(raw?: string): string | undefined {
+  if (!raw) return raw;
+  const trimmed = raw.trim();
+  return trimmed.startsWith("[") || trimmed.startsWith("{")
+    ? "We couldn't finish tailoring this CV. Please try again."
+    : raw;
+}
+
 function Logo() {
   return <span className="popup-logo"><Check size={18} strokeWidth={3} /></span>;
 }
@@ -195,7 +206,7 @@ export function Popup() {
       <h1>{job?.title || "Selected job offer"}</h1>
       <p className="popup-company">{job?.company}</p>
       <div className="popup-preview">{job?.description}</div>
-      {(error || activeTailoring?.error) && <div className="popup-error">{error || activeTailoring?.error}</div>}
+      {(error || activeTailoring?.error) && <div className="popup-error">{showError(error || activeTailoring?.error)}</div>}
       {activeTailoring?.status === "done" ? <div className="popup-actions">
         <button className="popup-primary" onClick={() => { openFullPage(`#editor/${activeTailoring.cvId}`); setTailoringJob(null); }}><ExternalLink size={16} /> Open your tailored CV</button>
         <button className="popup-link" onClick={reset}><ArrowLeft size={14} /> Adjust another resume</button>
