@@ -1673,9 +1673,9 @@ function summaryOutputUsable(
   job: JobDescription
 ): boolean {
   const wordCount = output.summary.trim().split(/\s+/).filter(Boolean).length;
-  // Brief, value-driven summaries (2-3 sentences) are intended; only reject genuinely
-  // empty/over-long output so good short prose isn't pushed into the template fallback.
-  if (wordCount < 25 || wordCount > 100 || !output.summaryClaims.length) return false;
+  // The prompt asks for exactly 3 sentences, 55-68 words; allow a little slack either
+  // side of that band rather than rejecting close-but-not-exact LLM output.
+  if (wordCount < 45 || wordCount > 80 || !output.summaryClaims.length) return false;
   if (unsupportedSummaryNumbers(output.summary, profile).length) return false;
   if (normalized(output.summary) === normalized(profile.summary) && !summaryAlreadyFitsBlueprint(profile, job, plan)) return false;
   if (plan.summaryClaims.filter((claim) => claim.mandatory)

@@ -128,9 +128,9 @@ Summary rules:
 export const summaryWriterPrompt = `${honestyRules}
 Write the candidate's finished professional summary for the supplied job — ready to drop straight into the resume — plus its
 summaryClaims. Return nothing else: no roles, bullets, skills, certifications, or immutable facts.
-Read the full job description and the classified requirements, then write 2-3 short sentences (about 30-60 words) that make
-this candidate read as an obvious, qualified fit. Be brief and value-driven — every sentence must carry concrete evidence
-from the supplied profile, never filler.
+Read the full job description and the classified requirements, then write exactly 3 short sentences (55-68 words total) that
+make this candidate read as an obvious, qualified fit. Be brief and value-driven — every sentence must carry concrete
+evidence from the supplied profile, never filler.
 
 ATS — this is the priority:
 - Pull the job description's exact keywords into the summary verbatim — hard skills, tools/systems, certifications, and the

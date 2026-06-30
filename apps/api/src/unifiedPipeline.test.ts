@@ -157,7 +157,7 @@ describe("unified evidence-first pipeline", () => {
   });
 
   it("keeps a usable brief LLM summary verbatim without templated prepend or padding", async () => {
-    const briefSummary = "Backend Engineer with hands-on TypeScript API delivery experience building reliable backend services, automating CI deployments, and shipping production code that 12 internal teams depend on every single day for delivery.";
+    const briefSummary = "Backend Engineer with hands-on TypeScript API delivery experience building reliable backend services for production workloads. Shipped TypeScript APIs used daily by 12 internal teams and kept release pipelines fast and dependable. Brings a proven record of delivering backend services that hold up under real production traffic.";
     const briefWriter = {
       ...writer,
       summary: briefSummary,
