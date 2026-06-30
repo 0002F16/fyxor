@@ -7,7 +7,7 @@ import {
   type StorageState,
 } from "@cv-tailor/shared";
 import { TAILOR_STAGES, useStagedProgress } from "./progress";
-import { clearPendingJob, getState, setTailoringJob } from "./storage";
+import { clearPendingJob, getState, queuePendingJob, setTailoringJob } from "./storage";
 import type { LinkedInScanResult } from "./scraper";
 import { sendLinkedInMessage } from "./linkedinMessaging";
 
@@ -109,6 +109,15 @@ export function Popup() {
     chrome.action.setBadgeText({ text: "" });
   }
 
+  // Edit the captured title/company before tailoring. Local state drives generate();
+  // the blur persist keeps the correction if the popup is reopened.
+  function editJob(patch: Partial<JobDescription>) {
+    setJob((current) => (current ? { ...current, ...patch } : current));
+  }
+  function persistJob() {
+    if (job) void queuePendingJob(job);
+  }
+
   async function generate() {
     if (!state?.profile || !job || startingTailoring) return;
     setError("");
@@ -203,8 +212,16 @@ export function Popup() {
       <button className="popup-primary" onClick={() => openFullPage("#onboarding")}>Start onboarding</button>
     </main> : <main className="popup-main">
       <p className="popup-eyebrow">{job?.source === "linkedin" ? "LinkedIn job detected" : "Job offer imported"}</p>
-      <h1>{job?.title || "Selected job offer"}</h1>
-      <p className="popup-company">{job?.company}</p>
+      {busy || activeTailoring?.status === "done" ? <>
+        <h1>{job?.title || "Selected job offer"}</h1>
+        <p className="popup-company">{job?.company}</p>
+      </> : <div className="popup-edit">
+        <label className="popup-edit-label">Job title</label>
+        <input className="popup-edit-input is-title" value={job?.title || ""} placeholder="Job title"
+          onChange={(e) => editJob({ title: e.target.value })} onBlur={persistJob} />
+        <input className="popup-edit-input is-company" value={job?.company || ""} placeholder="Employer"
+          onChange={(e) => editJob({ company: e.target.value })} onBlur={persistJob} />
+      </div>}
       <div className="popup-preview">{job?.description}</div>
       {(error || activeTailoring?.error) && <div className="popup-error">{showError(error || activeTailoring?.error)}</div>}
       {activeTailoring?.status === "done" ? <div className="popup-actions">

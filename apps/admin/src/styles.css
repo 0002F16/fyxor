@@ -1,0 +1,32 @@
+@import "@fontsource/inter/400.css";
+@import "@fontsource/inter/500.css";
+@import "@fontsource/inter/600.css";
+@import "@fontsource/plus-jakarta-sans/600.css";
+@import "@fontsource/plus-jakarta-sans/700.css";
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root { color: #0f172a; background: #f8fafc; font-family: Inter, sans-serif; }
+* { box-sizing: border-box; }
+body { margin: 0; min-width: 320px; }
+button, input, textarea, select { font: inherit; }
+button { cursor: pointer; }
+::selection { background: #d1fae5; }
+
+/* Shared component classes, mirrored from the extension for visual parity. */
+.field { @apply w-full rounded-xl border border-line bg-white px-3 py-2.5 text-sm outline-none transition focus:border-emerald focus:ring-2 focus:ring-emerald/15; }
+.label { @apply mb-1.5 block text-xs font-semibold uppercase tracking-[.08em] text-muted; }
+.card { @apply rounded-2xl border border-line bg-white p-5 shadow-soft; }
+.btn { @apply inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-50; }
+.btn-primary { @apply btn bg-deep text-white hover:bg-emerald; }
+.btn-secondary { @apply btn border border-line bg-white text-ink hover:bg-soft; }
+.chip { @apply rounded-lg bg-mint px-2 py-1 text-xs font-semibold text-deep; }
+.section-title { @apply font-display text-xl font-bold tracking-tight text-ink; }
+
+/* Status pills for tailoring-run states. */
+.run-pill { @apply inline-flex items-center rounded-md px-2 py-0.5 text-xs font-semibold; }
+.run-completed { @apply bg-mint text-deep; }
+.run-running, .run-pending { @apply bg-amber-100 text-amber-700; }
+.run-failed { @apply bg-rose-100 text-rose-700; }
+.run-cancelled { @apply bg-slate-100 text-slate-600; }

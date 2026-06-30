@@ -58,6 +58,13 @@
 .popup-main strong { color: #075f48; }
 .popup-company { margin-top: 4px !important; }
 
+.popup-edit { display: grid; gap: 4px; }
+.popup-edit-label { color: #07835e; font-size: 9px; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; }
+.popup-edit-input { background: #fff; border: 1px solid #d8e0dc; border-radius: 10px; color: #17201d; font-family: inherit; padding: 8px 11px; width: 100%; }
+.popup-edit-input:focus { border-color: #07835e; box-shadow: 0 0 0 3px rgba(7, 131, 94, .12); outline: none; }
+.popup-edit-input.is-title { font-family: "Plus Jakarta Sans", Inter, sans-serif; font-size: 18px; font-weight: 700; letter-spacing: -.025em; }
+.popup-edit-input.is-company { font-size: 13px; margin-top: 6px; }
+
 .popup-demo {
   background: #eef4f1;
   border: 1px solid #d8e0dc;

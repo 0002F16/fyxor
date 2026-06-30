@@ -1,12 +1,17 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle, ArrowLeft, ArrowRight, BriefcaseBusiness, Check, ChevronDown, Cloud, CloudOff,
-  Copy, Download, Eye, ExternalLink, FilePenLine, FileText, Files, Lightbulb, LoaderCircle, LogOut,
-  MoreVertical, MousePointerClick, Palette, PenLine, Pin, Plus, Reply, Save, Send, Sparkles,
-  Trash2, Upload, X
+  Copy, Download, Eye, ExternalLink, FilePenLine, FileText, Files, GripVertical, LayoutGrid,
+  Lightbulb, LoaderCircle, LogOut, MoreVertical, MousePointerClick, Palette, PenLine, Pin, Plus,
+  Reply, Rows3, Save, Send, Sparkles, Trash2, Upload, X
 } from "lucide-react";
 import {
+  DndContext, DragOverlay, PointerSensor, useDraggable, useDroppable, useSensor, useSensors,
+  type DragEndEvent, type DragStartEvent
+} from "@dnd-kit/core";
+import {
   applyRegeneratedSection,
+  baseProfileToExportCv,
   bulletHasMetric,
   cvStyleSchema,
   educationHasContent,
@@ -19,6 +24,7 @@ import {
   missingStructuredProfileEvidence,
   normalizeSkillCategories,
   resumeStyleVars,
+  synthesizeRoleJob,
   type ApplicationRecord,
   type ApplicationStatus,
   type AiProvider,
@@ -709,7 +715,7 @@ function downloadBlob(blob: Blob, fileName: string) {
 
 // Sticky editor toolbar: Edit/Preview toggle, live page-count badge, style menu
 // and download menu. Replaces the scattered sidebar style + download cards.
-function EditorToolbar({ mode, onMode, pages, style, onStyle, onExport, busy }: {
+function EditorToolbar({ mode, onMode, pages, style, onStyle, onExport, busy, okPages = 1 }: {
   mode: "edit" | "preview";
   onMode: (mode: "edit" | "preview") => void;
   pages: number;
@@ -717,6 +723,7 @@ function EditorToolbar({ mode, onMode, pages, style, onStyle, onExport, busy }: 
   onStyle: (style: CvStyle) => void;
   onExport: (format: "pdf" | "docx") => void;
   busy?: boolean;
+  okPages?: number;
 }) {
   return (
     <div className="editor-toolbar">
@@ -728,8 +735,8 @@ function EditorToolbar({ mode, onMode, pages, style, onStyle, onExport, busy }: 
           <Eye size={14} /> Preview
         </button>
       </div>
-      <span className={`page-badge ${pages <= 1 ? "is-ok" : "is-warn"}`} title="Estimated pages in the exported file">
-        {pages <= 1 ? <><Check size={13} /> Fits on 1 page</> : <><Files size={13} /> {pages} pages</>}
+      <span className={`page-badge ${pages <= okPages ? "is-ok" : "is-warn"}`} title="Estimated pages in the exported file">
+        {pages <= okPages ? <><Check size={13} /> Fits on {pages === 1 ? "1 page" : `${pages} pages`}</> : <><Files size={13} /> {pages} pages</>}
       </span>
       <div className="ml-auto flex items-center gap-2">
         <StyleMenu value={style} onChange={onStyle} />
@@ -790,8 +797,8 @@ function DownloadMenu({ onExport, busy }: { onExport: (format: "pdf" | "docx") =
 
 const STYLE_PRESETS: Array<{ id: CvStyle["preset"]; label: string; hint: string }> = [
   { id: "modern", label: "Modern", hint: "Sans-serif · emerald accent" },
-  { id: "garamond", label: "Garamond", hint: "Serif · monochrome" },
-  { id: "times", label: "Times", hint: "Serif · monochrome" }
+  { id: "garamond", label: "Editorial", hint: "Serif · monochrome" },
+  { id: "times", label: "Classic", hint: "Serif · monochrome" }
 ];
 
 // Per-resume style preset. Edits the `style` object on the CV/profile, which
@@ -980,8 +987,8 @@ function strengthBand(cv: TailoredCv): string {
   return score >= 85 ? "Strong" : score >= 60 ? "Good" : "Needs work";
 }
 
-// Minimal click-away dropdown. The trigger is a styled button; `children` is a
-// render prop receiving a `close` callback so items can dismiss the menu.
+// Minimal click-away dropdown. Uses fixed positioning so it escapes
+// any overflow:hidden ancestor (e.g. the tracker card).
 function Menu({ label, className, align = "right", children }: {
   label: React.ReactNode;
   className?: string;
@@ -989,11 +996,25 @@ function Menu({ label, className, align = "right", children }: {
   children: (close: () => void) => React.ReactNode;
 }) {
   const [open, setOpen] = useState(false);
+  const [pos, setPos] = useState({ top: 0, left: 0 });
+  const btnRef = useRef<HTMLButtonElement>(null);
+
+  function toggle() {
+    if (!open && btnRef.current) {
+      const r = btnRef.current.getBoundingClientRect();
+      setPos({
+        top: r.bottom + 4,
+        left: align === "right" ? r.right - 176 : r.left,
+      });
+    }
+    setOpen((o) => !o);
+  }
+
   return <div className="relative inline-block">
-    <button type="button" className={className} onClick={() => setOpen((o) => !o)}>{label}</button>
+    <button ref={btnRef} type="button" className={className} onClick={toggle}>{label}</button>
     {open && <>
-      <button type="button" tabIndex={-1} aria-hidden className="fixed inset-0 z-20 cursor-default" onClick={() => setOpen(false)} />
-      <div className={`absolute z-30 mt-1 min-w-44 rounded-xl border border-line bg-white p-1 text-left shadow-lg ${align === "right" ? "right-0" : "left-0"}`}>
+      <button type="button" tabIndex={-1} aria-hidden className="fixed inset-0 z-[9998] cursor-default" onClick={() => setOpen(false)} />
+      <div className="fixed z-[9999] min-w-44 rounded-xl border border-line bg-white p-1 text-left shadow-lg" style={{ top: pos.top, left: pos.left }}>
         {children(() => setOpen(false))}
       </div>
     </>}
@@ -1066,8 +1087,11 @@ function Home({ state, onChange: _onChange }: { state: StorageState; onChange: (
         </div>
       : activeRun?.status === "error"
       ? <div className="rounded-2xl border border-amber-300 bg-amber-50 p-6 text-amber-950">
-          <div className="flex gap-2 font-semibold"><AlertTriangle size={18} /> Last tailoring didn't finish</div>
-          <p className="mt-1 text-sm">{activeRun.error || "Something interrupted the last run. Reopen the job from the extension to try again."}</p>
+          <div className="flex items-start justify-between gap-2">
+            <div className="flex gap-2 font-semibold"><AlertTriangle size={18} /> Last tailoring didn't finish</div>
+            <button className="shrink-0 text-amber-700 hover:text-amber-950" onClick={() => updateState((s) => ({ ...s, tailoringJob: null })).then(_onChange)} aria-label="Dismiss"><X size={16} /></button>
+          </div>
+          <p className="mt-1 text-sm">{/^\s*[\[{]/.test(activeRun.error || "") ? "Something went wrong on our end. Please try tailoring again." : activeRun.error || "Something interrupted the last run. Reopen the job from the extension to try again."}</p>
           {!!activeRun.cvId && <button className="btn-secondary mt-4 !bg-white" onClick={() => { location.hash = `#editor/${activeRun.cvId}`; }}><FilePenLine size={15} /> Open last draft</button>}
         </div>
       : !state.profile
@@ -1143,19 +1167,202 @@ function Home({ state, onChange: _onChange }: { state: StorageState; onChange: (
   </Shell>;
 }
 
+function VariantSwitcher({ variants, selected, onSelect, onDelete, tailoring }: {
+  variants: TailoredCv[];
+  selected: "base" | string;
+  onSelect: (id: "base" | string) => void;
+  onDelete: (id: string) => void;
+  tailoring: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const current = selected === "base" ? "Base resume" : (variants.find((v) => v.id === selected)?.job.title ?? "Variant");
+  return (
+    <div className="menu">
+      <button type="button" className="toolbar-btn" onClick={() => setOpen((o) => !o)} aria-haspopup="menu" aria-expanded={open} disabled={tailoring}>
+        <FileText size={14} /> {current} <ChevronDown size={14} className="text-muted" />
+      </button>
+      {open && <>
+        <button type="button" className="menu-backdrop" aria-hidden onClick={() => setOpen(false)} tabIndex={-1} />
+        <div className="menu-pop" role="menu">
+          <button type="button" role="menuitemradio" aria-checked={selected === "base"} className={`menu-item ${selected === "base" ? "is-on" : ""}`}
+            onClick={() => { onSelect("base"); setOpen(false); }}>
+            <span className="flex-1 text-left"><span className="block text-sm font-semibold">Base resume</span><span className="block text-xs text-muted">Editable source</span></span>
+            {selected === "base" && <Check size={14} className="shrink-0 text-emerald" />}
+          </button>
+          {variants.length > 0 && <div className="mx-2 my-1 border-t border-line" />}
+          {variants.map((v) => (
+            <div key={v.id} className={`menu-item group items-start ${selected === v.id ? "is-on" : ""}`}>
+              <button type="button" className="min-w-0 flex-1 text-left" onClick={() => { onSelect(v.id); setOpen(false); }}>
+                <span className="block truncate text-sm font-semibold">{v.job.title}</span>
+                <span className="block text-xs text-muted">Tailored variant</span>
+              </button>
+              <button type="button" aria-label={`Delete ${v.job.title} variant`}
+                className="ml-1 shrink-0 rounded p-0.5 text-muted opacity-0 hover:text-red-600 group-hover:opacity-100"
+                onClick={(e) => { e.stopPropagation(); onDelete(v.id); setOpen(false); }}>
+                <Trash2 size={12} />
+              </button>
+            </div>
+          ))}
+        </div>
+      </>}
+    </div>
+  );
+}
+
+function TailorRolePanel({ profile, state, onDone, onCancel }: {
+  profile: BaseProfile;
+  state: StorageState;
+  onDone: (cv: TailoredCv) => void;
+  onCancel: () => void;
+}) {
+  const [role, setRole] = useState(profile.targetRole || "");
+  const [busy, setBusy] = useState("");
+  const [error, setError] = useState("");
+  const abortRef = useRef<AbortController | null>(null);
+
+  async function run() {
+    if (!role.trim()) return;
+    const controller = new AbortController();
+    abortRef.current = controller;
+    setBusy("Queued…"); setError("");
+    try {
+      const job = synthesizeRoleJob(role.trim());
+      const cv = await api.tailor(
+        state.settings.apiBaseUrl,
+        state.settings.aiProvider,
+        profile,
+        job,
+        state.settings.tailoringEngine,
+        controller.signal,
+        (run) => { setBusy(TAILORING_STAGE_LABELS[run.stage] ?? run.stage); }
+      );
+      onDone(cv);
+    } catch (e) {
+      if ((e as Error).name === "AbortError") return;
+      setError((e as Error).message);
+    } finally {
+      setBusy("");
+      abortRef.current = null;
+    }
+  }
+
+  function cancel() {
+    abortRef.current?.abort();
+    onCancel();
+  }
+
+  return (
+    <div className="card space-y-3">
+      <p className="flex items-center gap-2 text-sm font-semibold"><Sparkles size={15} className="text-emerald" /> Tailor to a role</p>
+      <p className="text-xs text-muted">Type a target role and we'll generate a tailored version of your resume optimised for it.</p>
+      {error && <ErrorBox message={error} />}
+      {busy ? (
+        <div className="space-y-2">
+          <Loading label={busy} />
+          <button className="btn-secondary w-full text-xs" onClick={cancel}><X size={13} /> Cancel</button>
+        </div>
+      ) : (
+        <div className="space-y-2">
+          <input
+            className="field w-full"
+            placeholder={profile.targetRole || "e.g. Senior Product Manager"}
+            value={role}
+            onChange={(e) => setRole(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") run(); }}
+            autoFocus
+          />
+          <div className="flex gap-2">
+            <button className="btn-primary flex-1 text-sm" onClick={run} disabled={!role.trim()}><Sparkles size={14} /> Generate</button>
+            <button className="btn-secondary text-sm" onClick={onCancel}><X size={14} /></button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ResumeView({ state, onChange }: { state: StorageState; onChange: (s: StorageState) => void }) {
   const [profile, setProfile] = useState(state.profile);
+  const [variants, setVariants] = useState<TailoredCv[]>(state.resumeVariants ?? []);
+  const [selected, setSelected] = useState<"base" | string>("base");
+  const [mode, setMode] = useState<"edit" | "preview">("edit");
+  const [pages, setPages] = useState(1);
+  const [busy, setBusy] = useState("");
+  const [error, setError] = useState("");
+  const [showTailorPanel, setShowTailorPanel] = useState(false);
   const { saveState, markEdited } = useSaveStatus();
-  useEffect(() => { if (!profile) return; const timer = setTimeout(async () => {
-    const next = await updateState((s) => ({ ...s, profile: { ...profile, updatedAt: new Date().toISOString() } }));
-    onChange(next); markEdited.saved();
-  }, 500); return () => clearTimeout(timer); }, [profile]);
+
+  // Autosave base profile
+  useEffect(() => {
+    if (!profile) return;
+    const timer = setTimeout(async () => {
+      const next = await updateState((s) => ({ ...s, profile: { ...profile, updatedAt: new Date().toISOString() } }));
+      onChange(next); markEdited.saved();
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [profile]);
+
+  // Autosave variants
+  useEffect(() => {
+    const timer = setTimeout(async () => {
+      const next = await updateState((s) => ({ ...s, resumeVariants: variants }));
+      onChange(next);
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [variants]);
 
   if (!profile) return <Shell title="Your resume">
     <div className="card py-16 text-center"><FileText className="mx-auto text-emerald" size={32} /><h2 className="mt-4 section-title">You don't have a resume yet</h2><p className="mx-auto mt-2 max-w-md text-sm text-muted">Create your base CV once — upload a file or build it step by step. It becomes the source for every tailored application.</p><button className="btn-primary mt-6" onClick={() => location.hash = "#onboarding"}><Sparkles size={16} /> Create your resume</button></div>
   </Shell>;
 
-  const evidenceGaps = missingStructuredProfileEvidence(profile);
+  // Capture the narrowed (non-null) profile so closures can safely reference it.
+  // TypeScript doesn't track that the early-return guard above eliminates null
+  // inside async callbacks and event handlers that close over `profile`.
+  const currentProfile = profile;
+
+  const activeVariant = selected !== "base" ? variants.find((v) => v.id === selected) : undefined;
+  const activeDoc = activeVariant ?? currentProfile;
+  const activeStyle = activeDoc.style;
+  const activeHeadline = activeVariant ? activeVariant.job.title : currentProfile.targetRole;
+  const isTailoring = !!busy;
+
+  async function exportResume(format: "pdf" | "docx") {
+    setBusy(`Creating ${format.toUpperCase()}…`); setError("");
+    try {
+      const cv = activeVariant ?? baseProfileToExportCv(currentProfile);
+      const name = currentProfile.contact.name || "resume";
+      const slug = activeVariant ? activeVariant.job.title : "resume";
+      const fileName = `${name.toLowerCase().replace(/\s+/g, "-")}-${slug.toLowerCase().replace(/\s+/g, "-")}.${format}`;
+      downloadBlob(await api.export(state.settings.apiBaseUrl, state.settings.aiProvider, currentProfile, cv, format), fileName);
+    } catch (e) {
+      if (!(await handleAuthExpiry(e, onChange))) setError((e as Error).message);
+    } finally { setBusy(""); }
+  }
+
+  async function regenerateVariantSection(section: "summary" | "experience" | "skills", experienceId?: string) {
+    if (!activeVariant) return;
+    setBusy(`Regenerating ${section}…`); setError("");
+    try {
+      const result = await api.regenerate(state.settings.apiBaseUrl, state.settings.aiProvider, { profile: currentProfile, cv: activeVariant, section, experienceId });
+      setVariants((prev) => prev.map((v) => v.id === activeVariant.id ? applyRegeneratedSection(v, result, section, experienceId) : v));
+    } catch (e) {
+      if (!(await handleAuthExpiry(e, onChange))) setError((e as Error).message);
+    } finally { setBusy(""); }
+  }
+
+  function handleVariantDone(cv: TailoredCv) {
+    setVariants((prev) => [...prev, cv]);
+    setSelected(cv.id);
+    setShowTailorPanel(false);
+  }
+
+  function deleteVariant(id: string) {
+    setVariants((prev) => prev.filter((v) => v.id !== id));
+    if (selected === id) setSelected("base");
+  }
+
+  const evidenceGaps = missingStructuredProfileEvidence(currentProfile);
+
   return <Shell title="Your resume">
     {!!evidenceGaps.length && <div className="mb-5 rounded-2xl border border-amber-300 bg-amber-50 p-4 text-amber-950">
       <div className="flex gap-2 font-semibold"><AlertTriangle size={18} /> Some source details need a quick profile update</div>
@@ -1163,16 +1370,121 @@ function ResumeView({ state, onChange }: { state: StorageState; onChange: (s: St
       <button className="btn-secondary mt-3 !bg-white" onClick={() => { location.hash = "#onboarding/evidence"; }}>Update certifications and languages</button>
     </div>}
     <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,300px)]">
-      <div>
+      <div className="space-y-4">
+        {error && <ErrorBox message={error} />}
+        {busy && !showTailorPanel && <div className="card"><Loading label={busy} /></div>}
         <FirstEditHint state={state} onChange={onChange} />
-        <div className="your-resume-canvas rounded-2xl bg-soft p-3 ring-1 ring-line sm:p-6"><CvDocument cv={profile} headline={profile.targetRole} editable onChange={(next) => { setProfile({ ...profile, ...(next as Partial<BaseProfile>) }); markEdited.editing(); }} onCommitHeadline={(v) => { setProfile({ ...profile, targetRole: v.trim() }); markEdited.editing(); }} /></div>
+
+        {/* Toolbar: variant switcher + edit/preview + style + download */}
+        <div className="editor-toolbar flex-wrap gap-y-2">
+          <VariantSwitcher
+            variants={variants}
+            selected={selected}
+            onSelect={(id) => { setSelected(id); setMode("edit"); }}
+            onDelete={deleteVariant}
+            tailoring={isTailoring}
+          />
+          <button
+            type="button"
+            className={`toolbar-btn ${showTailorPanel ? "is-on" : ""}`}
+            onClick={() => { setShowTailorPanel((o) => !o); }}
+            disabled={isTailoring}
+            title="Generate a role-tailored version of your resume"
+          >
+            <Sparkles size={14} /> Tailor to role
+          </button>
+          <div className="h-5 w-px bg-line mx-1 hidden sm:block" />
+          <div className="seg" role="tablist" aria-label="Editor mode">
+            <button type="button" role="tab" aria-selected={mode === "edit"} className={mode === "edit" ? "is-on" : ""} onClick={() => setMode("edit")}>
+              <PenLine size={14} /> Edit
+            </button>
+            <button type="button" role="tab" aria-selected={mode === "preview"} className={mode === "preview" ? "is-on" : ""} onClick={() => setMode("preview")}>
+              <Eye size={14} /> Preview
+            </button>
+          </div>
+          <span className={`page-badge ${pages <= 2 ? "is-ok" : "is-warn"}`} title="Estimated pages in the exported file">
+            {pages <= 2 ? <><Check size={13} /> Fits on {pages === 1 ? "1 page" : `${pages} pages`}</> : <><Files size={13} /> {pages} pages</>}
+          </span>
+          <div className="ml-auto flex items-center gap-2">
+            <StyleMenu value={activeStyle} onChange={(style) => {
+              if (activeVariant) setVariants((prev) => prev.map((v) => v.id === activeVariant.id ? { ...v, style } : v));
+              else setProfile({ ...currentProfile, style });
+              markEdited.editing();
+            }} />
+            <DownloadMenu onExport={exportResume} busy={!!busy} />
+          </div>
+        </div>
+
+        <div className={`tailored-resume-canvas rounded-2xl p-3 sm:p-6 ${mode === "preview" ? "is-preview bg-soft" : "bg-soft ring-1 ring-line"}`}>
+          {mode === "edit" && (
+            activeVariant ? (
+              <CvDocument cv={activeVariant} editable lockExperienceFacts
+                onChange={(next) => {
+                  let updated = next as TailoredCv;
+                  if (updated.summary !== activeVariant.summary) updated = markTailoredTextStale(updated, "summary");
+                  for (const exp of updated.experiences) {
+                    const prev = activeVariant.experiences.find((e) => e.id === exp.id);
+                    if (prev && JSON.stringify(exp.bullets) !== JSON.stringify(prev.bullets)) {
+                      updated = markTailoredTextStale(updated, "experience", exp.id);
+                    }
+                  }
+                  setVariants((vs) => vs.map((v) => v.id === activeVariant.id ? updated : v));
+                  markEdited.editing();
+                }}
+                onCommitHeadline={(v) => {
+                  setVariants((vs) => vs.map((vr) => vr.id === activeVariant.id ? { ...vr, job: { ...vr.job, title: v } } : vr));
+                  markEdited.editing();
+                }}
+                onRegenerate={regenerateVariantSection}
+                busy={!!busy}
+              />
+            ) : (
+              <CvDocument cv={currentProfile} headline={currentProfile.targetRole} editable
+                onChange={(next) => { setProfile({ ...currentProfile, ...(next as Partial<BaseProfile>) }); markEdited.editing(); }}
+                onCommitHeadline={(v) => { setProfile({ ...currentProfile, targetRole: v.trim() }); markEdited.editing(); }}
+              />
+            )
+          )}
+          <PaginatedPreview cv={activeDoc as TailoredCv} headline={activeHeadline} showSheets={mode === "preview"} onPageCount={setPages} />
+        </div>
       </div>
+
       <aside className="space-y-4 lg:sticky lg:top-24 lg:self-start">
-        <InlineEditHint saveState={saveState}>Click any line to rewrite it. Changes save to your base resume.</InlineEditHint>
-        <StrengthPanel state={state} doc={profile} kind="base" onChange={onChange}
-          onDismiss={(id) => { setProfile({ ...profile, dismissedChecks: [...(profile.dismissedChecks ?? []), id] }); markEdited.editing(); }} />
-        <StylePanel value={profile.style} onChange={(style) => { setProfile({ ...profile, style }); markEdited.editing(); }} />
-        <button className="btn-secondary w-full" onClick={() => location.hash = "#onboarding"}><PenLine size={16} /> Redo step-by-step setup</button>
+        {showTailorPanel && (
+          <TailorRolePanel
+            profile={currentProfile}
+            state={state}
+            onDone={handleVariantDone}
+            onCancel={() => setShowTailorPanel(false)}
+          />
+        )}
+
+        {mode === "edit" && !showTailorPanel && (
+          <InlineEditHint saveState={saveState}>
+            {activeVariant
+              ? <>Click any line to rewrite it. Hover a section heading to <span className="font-semibold text-emerald">Regenerate</span> with AI. Switch to <span className="font-semibold text-emerald">Preview</span> to see exact pages.</>
+              : <>Click any line to rewrite it. Changes save to your base resume. Use <span className="font-semibold text-emerald">Tailor to role</span> to create a targeted variant.</>
+            }
+          </InlineEditHint>
+        )}
+
+        {activeVariant ? (
+          <QualitySignals cv={activeVariant} />
+        ) : (
+          <StrengthPanel state={state} doc={currentProfile} kind="base" onChange={onChange}
+            onDismiss={(id) => { setProfile({ ...currentProfile, dismissedChecks: [...(currentProfile.dismissedChecks ?? []), id] }); markEdited.editing(); }} />
+        )}
+
+        {!activeVariant && (
+          <button className="btn-secondary w-full" onClick={() => location.hash = "#onboarding"}><PenLine size={16} /> Redo step-by-step setup</button>
+        )}
+
+        {activeVariant && (
+          <div className="space-y-2">
+            <p className="px-1 text-[11px] text-muted">Downloads (top right) receive one final format check before export.</p>
+            <button className="btn-secondary w-full text-sm" onClick={() => setSelected("base")}><ArrowLeft size={14} /> Back to base resume</button>
+          </div>
+        )}
       </aside>
     </div>
   </Shell>;
@@ -1183,8 +1495,178 @@ const TRACKER_FILTERS: { key: "all" | ApplicationStatus; label: string }[] = [
   { key: "sent", label: "Sent" }, { key: "replied", label: "Replied" }
 ];
 
+// Inline rename form shared by the list rows and kanban cards. `guard` stops the
+// pointer events from reaching a draggable ancestor so typing/clicking inside the
+// card doesn't start a drag (the whole board card is a drag handle).
+function JobNameEditor({ record, onSave, onCancel, guard }: {
+  record: ApplicationRecord;
+  onSave: (title: string, company: string) => void;
+  onCancel: () => void;
+  guard?: boolean;
+}) {
+  const [title, setTitle] = useState(record.job.title);
+  const [company, setCompany] = useState(record.job.company);
+  function save() { onSave(title.trim(), company.trim()); }
+  function onKeyDown(e: React.KeyboardEvent) {
+    if (e.key === "Enter") { e.preventDefault(); save(); }
+    else if (e.key === "Escape") { e.preventDefault(); onCancel(); }
+  }
+  return <div className="flex min-w-0 flex-1 flex-col gap-2" onPointerDown={guard ? (e) => e.stopPropagation() : undefined}>
+    <input autoFocus className="field !py-1.5 text-sm font-semibold" value={title} placeholder="Job title"
+      onChange={(e) => setTitle(e.target.value)} onKeyDown={onKeyDown} />
+    <input className="field !py-1.5 text-sm" value={company} placeholder="Employer"
+      onChange={(e) => setCompany(e.target.value)} onKeyDown={onKeyDown} />
+    <div className="flex items-center gap-2">
+      <button className="btn-primary !px-2.5 !py-1 text-xs" onClick={save}>Save</button>
+      <button className="btn-secondary !px-2.5 !py-1 text-xs" onClick={onCancel}>Cancel</button>
+    </div>
+  </div>;
+}
+
+// Per-record callbacks shared by the kanban card surface (used both as the
+// in-column card and as the floating drag overlay clone).
+type BoardActions = {
+  onOpen: (record: ApplicationRecord) => void;
+  onDuplicate: (record: ApplicationRecord) => void;
+  onExport: (record: ApplicationRecord, format: "pdf" | "docx") => void;
+  onRequestDelete: (id: string) => void;
+  onConfirmDelete: (record: ApplicationRecord) => void;
+  onCancelDelete: () => void;
+  onRename: (record: ApplicationRecord) => void;
+  onRenameSave: (id: string, title: string, company: string) => void;
+  onRenameCancel: () => void;
+};
+
+// Presentational card body — no drag wiring, so it can be reused verbatim by the
+// DragOverlay clone. `dimmed` greys the original while its overlay is in flight.
+function BoardCardBody({ record, confirming, editing, actions, dimmed }: {
+  record: ApplicationRecord;
+  confirming: boolean;
+  editing?: boolean;
+  actions: BoardActions;
+  dimmed?: boolean;
+}) {
+  if (editing) return <div className={`rounded-xl border border-line bg-white p-3 shadow-soft transition ${dimmed ? "opacity-40" : ""}`}>
+    <JobNameEditor guard record={record} onSave={(t, c) => actions.onRenameSave(record.id, t, c)} onCancel={actions.onRenameCancel} />
+  </div>;
+  return <div className={`rounded-xl border border-line bg-white p-3 shadow-soft transition ${dimmed ? "opacity-40" : ""}`}>
+    <div className="flex items-start gap-2">
+      <GripVertical size={14} className="mt-0.5 shrink-0 text-line" />
+      <button className="min-w-0 flex-1 text-left" onClick={() => actions.onOpen(record)}>
+        <span className="block truncate text-sm font-semibold">{record.job.title || "Untitled job"}</span>
+        {record.job.company && <span className="block truncate text-xs text-muted">{record.job.company}</span>}
+      </button>
+      <Menu className="btn-secondary !px-1.5 !py-1" label={<MoreVertical size={14} />}>
+        {(close) => <>
+          <button className={MENU_ITEM} onClick={() => { actions.onRename(record); close(); }}><FilePenLine size={14} /> Rename</button>
+          <button className={MENU_ITEM} onClick={() => { actions.onDuplicate(record); close(); }}><Copy size={14} /> Duplicate</button>
+          <button className={MENU_ITEM} onClick={() => { actions.onExport(record, "pdf"); close(); }}><Download size={14} /> Export PDF</button>
+          <button className={MENU_ITEM} onClick={() => { actions.onExport(record, "docx"); close(); }}><Download size={14} /> Export DOCX</button>
+          <button className={`${MENU_ITEM} text-red-600`} onClick={() => { actions.onRequestDelete(record.id); close(); }}><Trash2 size={14} /> Delete</button>
+        </>}
+      </Menu>
+    </div>
+    {confirming ? (
+      <div className="mt-2 flex items-center gap-2 pl-6">
+        <span className="text-[11px] font-medium text-red-600">Delete?</span>
+        <button className="btn-secondary !px-2 !py-0.5 text-[11px] text-red-600" onClick={() => actions.onConfirmDelete(record)}>Confirm</button>
+        <button className="btn-secondary !px-2 !py-0.5 text-[11px]" onClick={() => actions.onCancelDelete()}>Cancel</button>
+      </div>
+    ) : (
+      <div className="mt-2 flex items-center justify-between gap-2 pl-6">
+        <span className="truncate text-[11px] text-muted">{relativeTime(record.updatedAt || record.createdAt)} · {strengthBand(record.tailoredCv)}</span>
+        <button className="shrink-0 text-[11px] font-semibold text-emerald hover:text-deep" onClick={() => actions.onOpen(record)}>See resume</button>
+      </div>
+    )}
+  </div>;
+}
+
+// Drag wrapper: the whole card is a drag handle. A 5px activation distance (set on
+// the PointerSensor) keeps inner buttons clickable — a click that doesn't move
+// never starts a drag.
+function DraggableCard({ record, confirming, editing, actions }: {
+  record: ApplicationRecord;
+  confirming: boolean;
+  editing: boolean;
+  actions: BoardActions;
+}) {
+  // While renaming, the card must not be draggable — otherwise text selection and
+  // input focus fight the drag sensor. Disable dragging for the row being edited.
+  const { attributes, listeners, setNodeRef, isDragging } = useDraggable({ id: record.id, disabled: editing });
+  return <div ref={setNodeRef} {...attributes} {...(editing ? {} : listeners)} className={editing ? "" : "cursor-grab touch-none select-none active:cursor-grabbing"}>
+    <BoardCardBody record={record} confirming={confirming} editing={editing} actions={actions} dimmed={isDragging} />
+  </div>;
+}
+
+// One status lane. The scrollable body is the droppable target so cards can land
+// anywhere in the lane, and `max-h` keeps tall columns from blowing out the page.
+function DroppableColumn({ status, count, children }: {
+  status: ApplicationStatus;
+  count: number;
+  children: React.ReactNode;
+}) {
+  const meta = STATUS_META[status];
+  const { setNodeRef, isOver } = useDroppable({ id: status });
+  return <div className="flex min-w-0 flex-1 flex-col">
+    <div className="mb-2 flex items-center gap-2 px-1">
+      <span className={`h-2 w-2 rounded-full ${meta.dot} ${status === "replied" ? "ring-1 ring-emerald" : ""}`} />
+      <span className="text-sm font-semibold">{meta.label}</span>
+      <span className="rounded-full bg-soft px-1.5 text-xs font-bold tabular-nums text-muted">{count}</span>
+    </div>
+    <div ref={setNodeRef} className={`flex max-h-[60vh] min-h-24 flex-col gap-2 overflow-y-auto rounded-xl border border-dashed p-2 transition ${isOver ? "border-emerald bg-mint/30" : "border-line bg-soft/40"}`}>
+      {children}
+    </div>
+  </div>;
+}
+
+// Kanban board: three status lanes with cross-column drag. Dropping a card onto a
+// different lane calls `onDrop(id, status)` — which is the Tracker's `setStatus`,
+// so persistence + the toast come for free. Grouping is O(n), so 100+ cards stay
+// cheap and dnd-kit only tracks the single active drag.
+function TrackerBoard({ records, actions, confirmingId, editingId, onDrop }: {
+  records: ApplicationRecord[];
+  actions: BoardActions;
+  confirmingId: string;
+  editingId: string;
+  onDrop: (id: string, status: ApplicationStatus) => void;
+}) {
+  const [activeId, setActiveId] = useState<string | null>(null);
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
+  const byStatus = useMemo(() => {
+    const m: Record<ApplicationStatus, ApplicationRecord[]> = { "not-sent": [], sent: [], replied: [] };
+    for (const r of records) m[r.status].push(r);
+    return m;
+  }, [records]);
+  const active = activeId ? records.find((r) => r.id === activeId) ?? null : null;
+
+  return <DndContext sensors={sensors}
+    onDragStart={(e: DragStartEvent) => setActiveId(String(e.active.id))}
+    onDragCancel={() => setActiveId(null)}
+    onDragEnd={(e: DragEndEvent) => {
+      setActiveId(null);
+      const over = e.over?.id;
+      if (!over) return;
+      const rec = records.find((r) => r.id === e.active.id);
+      if (rec && rec.status !== over) onDrop(String(e.active.id), over as ApplicationStatus);
+    }}>
+    <div className="flex gap-3 overflow-x-auto p-3">
+      {STATUS_ORDER.map((status) => (
+        <DroppableColumn key={status} status={status} count={byStatus[status].length}>
+          {byStatus[status].length === 0
+            ? <p className="px-2 py-6 text-center text-xs text-muted">Drop cards here</p>
+            : byStatus[status].map((r) => <DraggableCard key={r.id} record={r} confirming={confirmingId === r.id} editing={editingId === r.id} actions={actions} />)}
+        </DroppableColumn>
+      ))}
+    </div>
+    <DragOverlay>
+      {active ? <BoardCardBody record={active} confirming={false} actions={actions} /> : null}
+    </DragOverlay>
+  </DndContext>;
+}
+
 function Tracker({ state, onChange }: { state: StorageState; onChange: (s: StorageState) => void }) {
   const [confirmingId, setConfirmingId] = useState("");
+  const [editingId, setEditingId] = useState("");
   const [filter, setFilter] = useState<"all" | ApplicationStatus>("all");
   const [toast, setToast] = useState<{ label: string; cls: string; dot: string; key: number } | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1209,6 +1691,12 @@ function Tracker({ state, onChange }: { state: StorageState; onChange: (s: Stora
     setToast({ ...meta, key: Date.now() });
     toastTimer.current = setTimeout(() => setToast(null), 2500);
   }
+  // Renaming is a real edit, so bump updatedAt (re-sorts the list to the top,
+  // consistent with how editing the CV behaves).
+  async function rename(id: string, title: string, company: string) {
+    onChange(await updateState((s) => ({ ...s, applications: s.applications.map((a) => (a.id === id ? { ...a, job: { ...a.job, title, company }, updatedAt: new Date().toISOString() } : a)) })));
+    setEditingId("");
+  }
   async function duplicate(record: ApplicationRecord) {
     const cv = { ...record.tailoredCv, id: makeId("cv"), createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
     const copy = { ...record, id: makeId("application"), tailoredCv: cv, status: "not-sent" as const, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
@@ -1232,27 +1720,58 @@ function Tracker({ state, onChange }: { state: StorageState; onChange: (s: Stora
     catch (e) { await handleAuthExpiry(e, onChange); }
   }
 
+  // List vs. board layout — device-local, persisted in settings like the other UI
+  // preferences (e.g. resumeStrengthHidden).
+  const view = state.settings.trackerView;
+  async function setView(v: "list" | "board") {
+    onChange(await updateState((s) => ({ ...s, settings: { ...s.settings, trackerView: v } })));
+  }
+
+  // Card actions reused by every kanban card and its drag overlay.
+  const boardActions: BoardActions = {
+    onOpen: (r) => { location.hash = `#editor/${r.tailoredCv.id}`; },
+    onDuplicate: duplicate,
+    onExport: exportRecord,
+    onRequestDelete: (id) => setConfirmingId(id),
+    onConfirmDelete: (r) => remove(r.id),
+    onCancelDelete: () => setConfirmingId(""),
+    onRename: (r) => setEditingId(r.id),
+    onRenameSave: rename,
+    onRenameCancel: () => setEditingId("")
+  };
+
   return <Shell title="Applications" eyebrow="Track every role you've tailored for">
     {!state.settings.onboardingComplete && <div className="mb-5 card flex items-center justify-between"><div><p className="font-semibold">Complete your base profile</p><p className="text-sm text-muted">Tailoring needs verified source experience.</p></div><button className="btn-primary" onClick={() => location.hash = "#onboarding"}>Start onboarding</button></div>}
     {!records.length ? <EmptyApplications /> : <>
-      <div className="card overflow-hidden !p-0">
-        <div className="flex items-center gap-1.5 overflow-x-auto border-b border-line px-3 py-2.5 sm:px-4">
+      <div className="mb-4 flex flex-wrap items-center gap-3">
+        {view === "list" && <div className="flex items-center gap-1.5 overflow-x-auto">
           {TRACKER_FILTERS.map(({ key, label }) => {
             const on = filter === key;
             return <button key={key} onClick={() => setFilter(key)} className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-3 py-1.5 text-sm font-semibold transition ${on ? "bg-deep text-white" : "text-muted hover:bg-soft hover:text-ink"}`}>
               {label}<span className={`rounded-full px-1.5 text-xs font-bold tabular-nums ${on ? "bg-white/20" : "bg-soft text-muted"}`}>{counts[key]}</span>
             </button>;
           })}
+        </div>}
+        <div className="seg ml-auto" role="tablist" aria-label="Applications view">
+          <button type="button" role="tab" aria-selected={view === "list"} className={view === "list" ? "is-on" : ""} onClick={() => setView("list")}><Rows3 size={14} /> List</button>
+          <button type="button" role="tab" aria-selected={view === "board"} className={view === "board" ? "is-on" : ""} onClick={() => setView("board")}><LayoutGrid size={14} /> Board</button>
         </div>
+      </div>
 
+      {view === "board" ? <div className="card overflow-hidden !p-0">
+        <TrackerBoard records={records} actions={boardActions} confirmingId={confirmingId} editingId={editingId} onDrop={setStatus} />
+      </div> : <div className="card overflow-hidden !p-0">
         {!visible.length ? <div className="px-5 py-14 text-center text-sm text-muted">No applications with this status yet.</div> :
         visible.map((record) => {
           const meta = STATUS_META[record.status];
           return <div key={record.id} className="tracker-row flex flex-col gap-3 border-b border-line px-4 py-4 transition last:border-0 hover:bg-soft/50 sm:flex-row sm:items-center sm:gap-4 sm:px-5">
-            <button className="min-w-0 flex-1 text-left" onClick={() => { location.hash = `#editor/${record.tailoredCv.id}`; }}>
+            {editingId === record.id
+              ? <JobNameEditor record={record} onSave={(t, c) => rename(record.id, t, c)} onCancel={() => setEditingId("")} />
+              : <button className="min-w-0 flex-1 text-left" onClick={() => { location.hash = `#editor/${record.tailoredCv.id}`; }}>
               <span className="block truncate font-semibold">{record.job.title || "Untitled job"}{record.job.company ? <span className="font-normal text-muted"> · {record.job.company}</span> : ""}</span>
               <span className="mt-0.5 block truncate text-xs text-muted">{relativeTime(record.updatedAt || record.createdAt)} · {strengthBand(record.tailoredCv)}</span>
-            </button>
+            </button>}
+            {editingId !== record.id && <>
             <div className="shrink-0 sm:w-28">
               <Menu align="left" className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold ${meta.cls}`} label={<><span className={`h-1.5 w-1.5 rounded-full ${meta.dot}`} />{meta.label}<ChevronDown size={12} /></>}>
                 {(close) => STATUS_ORDER.map((s) => <button key={s} className={MENU_ITEM} onClick={() => { setStatus(record.id, s); close(); }}>
@@ -1270,6 +1789,7 @@ function Tracker({ state, onChange }: { state: StorageState; onChange: (s: Stora
                 <button className="btn-primary !px-2.5 !py-1.5 text-xs" onClick={() => { location.hash = `#editor/${record.tailoredCv.id}`; }}><FilePenLine size={13} /> See resume</button>
                 <Menu className="btn-secondary !px-2 !py-1.5" label={<MoreVertical size={15} />}>
                   {(close) => <>
+                    <button className={MENU_ITEM} onClick={() => { setEditingId(record.id); close(); }}><FilePenLine size={14} /> Rename</button>
                     <button className={MENU_ITEM} onClick={() => { duplicate(record); close(); }}><Copy size={14} /> Duplicate</button>
                     <button className={MENU_ITEM} onClick={() => { exportRecord(record, "pdf"); close(); }}><Download size={14} /> Export PDF</button>
                     <button className={MENU_ITEM} onClick={() => { exportRecord(record, "docx"); close(); }}><Download size={14} /> Export DOCX</button>
@@ -1278,9 +1798,10 @@ function Tracker({ state, onChange }: { state: StorageState; onChange: (s: Stora
                 </Menu>
               </>}
             </div>
+            </>}
           </div>;
         })}
-      </div>
+      </div>}
     </>}
 
     {toast && (

@@ -90,6 +90,10 @@ export function zodToJsonSchema(schema: z.ZodTypeAny): Record<string, unknown> {
   if (definition.typeName === z.ZodFirstPartyTypeKind.ZodNullable) {
     return { anyOf: [zodToJsonSchema(definition.innerType), { type: "null" }] };
   }
+  // z.preprocess / z.transform / z.refine — strip the effect and use the output schema
+  if (definition.typeName === z.ZodFirstPartyTypeKind.ZodEffects) {
+    return zodToJsonSchema(definition.schema);
+  }
   throw new Error(`Unsupported schema type: ${definition.typeName}`);
 }
 

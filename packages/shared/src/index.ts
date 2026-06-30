@@ -499,7 +499,7 @@ export const emptyStorageState = (): StorageState => ({
   tailoringJob: null,
   auth: null,
   settings: {
-    apiBaseUrl: "http://127.0.0.1:8787",
+    apiBaseUrl: "https://api-76-13-177-250.sslip.io",
     aiProvider: "groq-api",
     providerDefaultMigrated: true,
     tailoringEngine: "builtin",

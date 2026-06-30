@@ -63,7 +63,11 @@ html, body { margin: 0; padding: 0; background: #fff; }
 * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; box-sizing: border-box; }
 /* The preview classes (max-w-640, padding, shadow) are for the small in-app
    preview; for print the page itself supplies width + margins. */
-.cv-document { width: 100% !important; max-width: none !important; margin: 0 !important; padding: 0 !important; box-shadow: none !important; }
+.cv-document { width: 100% !important; max-width: none !important; margin: 0 !important; padding: 0 !important; box-shadow: none !important; overflow-wrap: anywhere; }
+/* Mirror the preview: wrap long tokens and let flex children shrink so nothing
+   spills into the right print margin (keeps the PDF faithful to the on-screen
+   paginated preview). */
+.cv-document * { min-width: 0; }
 /* Keep a heading with the block it introduces, and never split an individual
    experience/education entry or bullet across the page boundary. Sections are
    allowed to flow across pages so a long section fills page 1 before page 2. */

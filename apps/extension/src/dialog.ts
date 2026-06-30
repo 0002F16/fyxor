@@ -46,6 +46,10 @@ export function createLinkedInDialog(onVisibilityChange?: (visible: boolean) => 
       .eyebrow { color:#047857;font-size:10px;font-weight:800;letter-spacing:.09em;text-transform:uppercase; }
       h2 { font-size:17px;line-height:1.25;margin:5px 0 2px; }
       .company,.muted { color:#64748b;font-size:12px;line-height:1.45; }
+      .edit-input { background:#fff;border:1px solid #dfe5e2;border-radius:10px;color:#0f172a;font-family:inherit;padding:8px 10px;width:100%; }
+      .edit-input:focus { border-color:#047857;box-shadow:0 0 0 3px rgba(4,120,87,.12);outline:none; }
+      .edit-input.title { font-size:16px;font-weight:700;letter-spacing:-.01em;margin:5px 0 0; }
+      .edit-input.company-input { font-size:12px;margin-top:8px; }
       .preview { background:#f8fafc;border:1px solid #edf0ee;border-radius:12px;color:#475569;font-size:11px;line-height:1.45;margin-top:12px;max-height:78px;overflow:hidden;padding:10px; }
       .notice,.error { border-radius:12px;font-size:12px;line-height:1.45;margin-bottom:12px;padding:10px; }
       .notice { background:#ecfdf5;color:#065f46; }
@@ -143,14 +147,28 @@ export function createLinkedInDialog(onVisibilityChange?: (visible: boolean) => 
       const jobStatus = job?.source === "linkedin"
         ? (summary.ready ? "LinkedIn job detected" : "Reading LinkedIn job")
         : (summary.ready ? "Job offer imported" : "Reading job offer");
+      // Once a job is captured, the title/company become editable so the user can
+      // correct a mis-parsed value before tailoring. Inputs are wired up below and
+      // mutate `job` in place, so they survive without a focus-dropping re-render.
+      const nameFields = job
+        ? `<input class="edit-input title" data-field="title" placeholder="Job title" value="${escape(job.title)}">
+           <input class="edit-input company-input" data-field="company" placeholder="Employer" value="${escape(job.company)}">`
+        : `<h2>${escape(summary.title)}</h2><div class="company">${escape(summary.company)}</div>`;
       main.innerHTML = `<div class="eyebrow">${jobStatus}</div>
-        <h2>${escape(summary.title)}</h2><div class="company">${escape(summary.company)}</div>
+        ${nameFields}
         <div class="preview">${escape(job?.description || scanReason)}</div>
         <div class="actions">
           <button class="action primary" data-action="generate" ${summary.ready ? "" : "disabled"}>Generate tailored CV</button>
           <button class="link" data-action="tracker">Open tracker</button>
         </div>`;
     }
+    main.querySelectorAll<HTMLInputElement>("input[data-field]").forEach((input) => {
+      input.addEventListener("input", () => {
+        if (!job) return;
+        if (input.dataset.field === "title") job.title = input.value;
+        else if (input.dataset.field === "company") job.company = input.value;
+      });
+    });
     main.querySelector('[data-action="setup"]')?.addEventListener("click", () => openFullPage("#onboarding"));
     main.querySelector('[data-action="tracker"]')?.addEventListener("click", () => openFullPage("#tracker"));
     main.querySelector('[data-action="generate"]')?.addEventListener("click", generate);

@@ -119,3 +119,138 @@ export async function monthlyUsage(userId: string): Promise<{ total: number; byA
   }
   return { total, byAction };
 }
+
+// --- Admin (read-only) queries ---------------------------------------------
+// These join Better Auth's own `user` table (camelCase columns, so quoted) with
+// the app-owned usage tables. They're only reachable behind the admin allowlist
+// gate in app.ts; nothing here mutates data.
+
+export type AdminUserRow = {
+  id: string;
+  email: string;
+  name: string;
+  createdAt: string;
+  tailorsThisMonth: number;
+  tailorsAllTime: number;
+};
+
+// Account list with each user's tailor counts (this month + lifetime). Optional
+// case-insensitive email/name search and pagination.
+export async function listUsers(opts: { search?: string; limit?: number; offset?: number } = {}): Promise<AdminUserRow[]> {
+  const limit = Math.min(Math.max(opts.limit ?? 100, 1), 500);
+  const offset = Math.max(opts.offset ?? 0, 0);
+  const search = opts.search?.trim();
+  const params: unknown[] = [];
+  let where = "";
+  if (search) {
+    params.push(`%${search}%`);
+    where = `WHERE u.email ILIKE $${params.length} OR u.name ILIKE $${params.length}`;
+  }
+  params.push(limit, offset);
+  const { rows } = await pool.query<{
+    id: string; email: string; name: string | null; createdAt: Date;
+    tailors_month: string; tailors_all: string;
+  }>(
+    `SELECT u.id,
+            u.email,
+            u.name,
+            u."createdAt" AS "createdAt",
+            count(e.id) FILTER (
+              WHERE e.action = 'tailor' AND e.created_at >= date_trunc('month', now())
+            )::int AS tailors_month,
+            count(e.id) FILTER (WHERE e.action = 'tailor')::int AS tailors_all
+       FROM "user" u
+       LEFT JOIN usage_events e ON e.user_id = u.id
+       ${where}
+       GROUP BY u.id, u.email, u.name, u."createdAt"
+       ORDER BY u."createdAt" DESC
+       LIMIT $${params.length - 1} OFFSET $${params.length}`,
+    params
+  );
+  return rows.map((r) => ({
+    id: r.id,
+    email: r.email,
+    name: r.name ?? "",
+    createdAt: r.createdAt instanceof Date ? r.createdAt.toISOString() : String(r.createdAt),
+    tailorsThisMonth: Number(r.tailors_month),
+    tailorsAllTime: Number(r.tailors_all)
+  }));
+}
+
+// Platform-wide rollup for the overview cards.
+export async function adminUsageSummary(): Promise<{
+  userCount: number;
+  tailorsThisMonth: number;
+  tailorsAllTime: number;
+  byActionThisMonth: Record<string, number>;
+}> {
+  const [{ rows: userRows }, { rows: tailorRows }, { rows: actionRows }] = await Promise.all([
+    pool.query<{ count: string }>(`SELECT count(*)::int AS count FROM "user"`),
+    pool.query<{ month: string; all: string }>(
+      `SELECT count(*) FILTER (WHERE created_at >= date_trunc('month', now()))::int AS month,
+              count(*)::int AS all
+         FROM usage_events WHERE action = 'tailor'`
+    ),
+    pool.query<{ action: string; count: string }>(
+      `SELECT action, count(*)::int AS count FROM usage_events
+         WHERE created_at >= date_trunc('month', now())
+         GROUP BY action`
+    )
+  ]);
+  const byActionThisMonth: Record<string, number> = {};
+  for (const r of actionRows) byActionThisMonth[r.action] = Number(r.count);
+  return {
+    userCount: Number(userRows[0]?.count ?? 0),
+    tailorsThisMonth: Number(tailorRows[0]?.month ?? 0),
+    tailorsAllTime: Number(tailorRows[0]?.all ?? 0),
+    byActionThisMonth
+  };
+}
+
+export type AdminRunSummary = {
+  id: string;
+  status: string;
+  stage: string;
+  provider: string;
+  createdAt: string;
+  updatedAt: string;
+  error: string;
+};
+
+// One user's profile + monthly usage + recent tailoring runs. The run rows omit
+// the request/result jsonb so full CV contents never reach the dashboard.
+export async function userDetail(userId: string, runLimit = 20): Promise<{
+  user: { id: string; email: string; name: string; createdAt: string } | null;
+  usage: { total: number; byAction: Record<string, number> };
+  recentRuns: AdminRunSummary[];
+}> {
+  const [{ rows: userRows }, usage, { rows: runRows }] = await Promise.all([
+    pool.query<{ id: string; email: string; name: string | null; createdAt: Date }>(
+      `SELECT id, email, name, "createdAt" AS "createdAt" FROM "user" WHERE id = $1`,
+      [userId]
+    ),
+    monthlyUsage(userId),
+    pool.query<{ id: string; status: string; stage: string; provider: string; created_at: Date; updated_at: Date; error: string }>(
+      `SELECT id, status, stage, provider, created_at, updated_at, error
+         FROM tailoring_runs WHERE user_id = $1
+         ORDER BY updated_at DESC LIMIT $2`,
+      [userId, Math.min(Math.max(runLimit, 1), 100)]
+    )
+  ]);
+  const u = userRows[0];
+  return {
+    user: u
+      ? { id: u.id, email: u.email, name: u.name ?? "", createdAt: u.createdAt instanceof Date ? u.createdAt.toISOString() : String(u.createdAt) }
+      : null,
+    usage,
+    recentRuns: runRows.map((r) => ({
+      id: r.id,
+      status: r.status,
+      stage: r.stage,
+      provider: r.provider,
+      createdAt: r.created_at instanceof Date ? r.created_at.toISOString() : String(r.created_at),
+      updatedAt: r.updated_at instanceof Date ? r.updated_at.toISOString() : String(r.updated_at),
+      error: r.error ?? ""
+    }))
+  };
+}

@@ -16,6 +16,8 @@ export const auth = betterAuth({
   emailAndPassword: { enabled: true },
   plugins: [bearer()],
   // The extension's origin is `chrome-extension://<id>`, and the id differs
-  // between dev/unpacked and the published build, so trust the scheme.
+  // between dev/unpacked and the published build, so trust the scheme. The
+  // admin dashboard is same-origin (served by this API) so no extra origin is
+  // needed — the sslip.io URL is already covered by BETTER_AUTH_URL in prod.
   trustedOrigins: ["chrome-extension://"]
 });

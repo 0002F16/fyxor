@@ -131,4 +131,11 @@ textarea { resize: vertical; }
   padding: 0 !important;
   margin: 0 !important;
   box-shadow: none !important;
+  /* The window clips at exactly the 698px content width, so any content that
+     spills past the right edge (long URLs/tokens, an un-shrinkable flex title)
+     would get cut off. Force everything to stay inside the box: wrap long words
+     and let flex children shrink instead of overflowing right. */
+  overflow-wrap: anywhere;
 }
+.cv-measure .cv-document *,
+.cv-sheet .cv-document * { min-width: 0; }
