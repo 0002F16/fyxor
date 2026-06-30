@@ -1,6 +1,6 @@
 import { makeId, tailoringJobKey, type ApplicationRecord, type AiProvider, type BaseProfile, type JobDescription, type TailoringEngine } from "@cv-tailor/shared";
 import { api } from "./api";
-import { jobFromSelection } from "./selection";
+import { jobFromSelection, resolveSelectionJob } from "./selection";
 import { getState, queuePendingJob, setTailoringJob, updateState } from "./storage";
 
 interface TailorPayload {
@@ -224,11 +224,10 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   const pageUrl = info.pageUrl || tab?.url || "";
   const fallback = jobFromSelection(info.selectionText, pageUrl, tab?.title || "");
   // Prefer the DOM-scraped title/company/location, but keep the user's explicit
-  // selection as the description (it's what they chose to send).
+  // selection as the description. A partial scrape (description found, title/company
+  // empty) falls back to the text-parsed values instead of blanking the fields.
   const scraped = await scrapeJobFromTab(tab?.id);
-  const job: JobDescription = scraped
-    ? { ...scraped, description: info.selectionText.trim(), url: pageUrl }
-    : fallback;
+  const job: JobDescription = resolveSelectionJob(scraped, fallback);
   await queuePendingJob(job);
   await chrome.action.setBadgeBackgroundColor({ color: "#059669" });
   try {

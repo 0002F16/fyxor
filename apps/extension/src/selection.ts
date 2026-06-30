@@ -62,6 +62,23 @@ export function parseJobFromText(selectionText: string): { title: string; compan
   return { title, company, location };
 }
 
+// Merge a DOM-scraped job with the text-parsed fallback. Scraped values win when
+// present, but `scrapeLinkedIn` returns a job as soon as it finds a description —
+// even with an empty title/company — so any blank scraped field falls back to the
+// parsed value rather than overwriting it with "". The fallback already carries
+// `description = selectionText.trim()` and `url = pageUrl`.
+export function resolveSelectionJob(scraped: JobDescription | null, fallback: JobDescription): JobDescription {
+  if (!scraped) return fallback;
+  return {
+    ...scraped,
+    title: scraped.title || fallback.title,
+    company: scraped.company || fallback.company,
+    location: scraped.location || fallback.location,
+    description: fallback.description,
+    url: fallback.url
+  };
+}
+
 export function jobFromSelection(selectionText: string, pageUrl: string, pageTitle = ""): JobDescription {
   let company = "";
   let isFeedPath = false;

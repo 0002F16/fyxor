@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { jobFromSelection, parseJobFromText } from "./selection";
+import { jobFromSelection, parseJobFromText, resolveSelectionJob } from "./selection";
 
 const BOSCH_BLOCK = `Bosch Philippines logo
 Bosch Philippines
@@ -70,5 +70,33 @@ describe("selected text handoff", () => {
     expect(job.title).toBe("HR Intern");
     expect(job.company).toBe("Bosch Philippines");
     expect(job.location).toBe("Taguig, National Capital Region, Philippines");
+  });
+});
+
+describe("resolveSelectionJob", () => {
+  const fallback = jobFromSelection(BOSCH_BLOCK, "https://www.linkedin.com/jobs/view/123", "");
+
+  it("fills empty scraped title/company from the parsed fallback", () => {
+    const scraped = { title: "", company: "", location: "", description: "scraped desc", url: "https://x", source: "linkedin" as const };
+    const job = resolveSelectionJob(scraped, fallback);
+    expect(job.title).toBe("HR Intern");
+    expect(job.company).toBe("Bosch Philippines");
+    expect(job.location).toBe("Taguig, National Capital Region, Philippines");
+    // The user's selection stays the description, and the page URL is preserved.
+    expect(job.description).toBe(fallback.description);
+    expect(job.url).toBe("https://www.linkedin.com/jobs/view/123");
+    expect(job.source).toBe("linkedin");
+  });
+
+  it("keeps non-empty scraped title/company over the fallback", () => {
+    const scraped = { title: "Senior Recruiter", company: "Bosch Group", location: "Manila", description: "scraped desc", url: "https://x", source: "linkedin" as const };
+    const job = resolveSelectionJob(scraped, fallback);
+    expect(job.title).toBe("Senior Recruiter");
+    expect(job.company).toBe("Bosch Group");
+    expect(job.location).toBe("Manila");
+  });
+
+  it("returns the fallback unchanged when there is no scrape", () => {
+    expect(resolveSelectionJob(null, fallback)).toEqual(fallback);
   });
 });
