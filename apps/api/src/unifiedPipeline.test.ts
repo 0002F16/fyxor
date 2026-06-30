@@ -156,6 +156,28 @@ describe("unified evidence-first pipeline", () => {
     expect(cv.pipeline.aiCallCount).toBe(5);
   });
 
+  it("keeps a usable brief LLM summary verbatim without templated prepend or padding", async () => {
+    const briefSummary = "Backend Engineer with hands-on TypeScript API delivery experience building reliable backend services, automating CI deployments, and shipping production code that 12 internal teams depend on every single day for delivery.";
+    const briefWriter = {
+      ...writer,
+      summary: briefSummary,
+      summaryClaims: [{
+        id: "claim-1",
+        text: "TypeScript API delivery experience",
+        evidence: [{ sourceExperienceId: "source-1", sourceBulletIndexes: [0] }]
+      }]
+    };
+    const generate = dispatchGenerator({ writer: briefWriter });
+    const cv = await generateUnifiedCv({ generator: { generate }, profile, job, runId: "run-brief" });
+
+    expect(cv.summary).toBe(briefSummary);
+    expect(cv.summary).not.toMatch(/transitioning into/i);
+    expect(cv.summary).not.toMatch(/focused foundation|verified strengths/i);
+    expect(cv.pipeline.recoveries).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "source-summary-restored" })
+    ]));
+  });
+
   it("uses a conservative plan when the planner returns no usable source roles", async () => {
     const invalid = { ...plan, roles: [{ ...plan.roles[0], sourceExperienceId: "missing" }] };
     const safeWriter = {

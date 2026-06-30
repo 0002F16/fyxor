@@ -122,28 +122,40 @@ Summary rules:
 - Inferred context must retain provenance "inferred-context" and must not be expanded beyond the planned wording.`;
 
 // The summary is written in its own focused call so it gets the full job description
-// and classified requirements and leads with the role's exact language. This is the
-// highest-leverage section for relevance, so its prompt is the most detailed.
-export const summaryWriterPrompt = `${honestyRules}${writingStyle}
-Write ONLY the tailored professional summary and its summaryClaims for the supplied job. Return nothing else — no roles,
-bullets, skills, certifications, or immutable facts.
-Read the supplied job (title and full description) and the classified requirements carefully. Your job is to make this
-candidate read as an obvious fit for THIS role using the job's own words.
-Summary rules:
-- Follow summaryBlueprint and write 35-100 words using 2-4 evidence-backed claims drawn only from the supplied
-  summaryClaims and summaryEvidenceCatalogue.
-- Mirror the job description's exact terminology. When a required competency from the job title, description, or the
-  requirements list truthfully describes the candidate's supported or transferable evidence, use the job's own phrasing for
-  it verbatim (e.g. if the job says "stakeholder management" or "month-end close", use those exact terms, not synonyms).
-- Lead with the job's headline qualifications and most important requirements (priority "must" first) that the candidate
-  genuinely supports. Do not foreground generic competencies the job does not emphasize.
-- Every summaryClaims.text value must appear verbatim as a contiguous span inside the summary.
-- Include every mandatory claim naturally; do not turn the summary into a keyword list or a string of fragments.
-- A target professional identity is allowed only when summaryBlueprint.targetIdentityAllowed is true.
-- For transition or transferable positioning, lead with the proven background and state the intended move without claiming
-  prior employment in the target role.
-- Never invent a metric, employer, license, seniority, or responsibility. Inferred context must retain provenance
-  "inferred-context" and must not be expanded beyond the planned wording.`;
+// and classified requirements. Trust the model to write the finished prose: give it
+// strong, self-contained constraints (brief, value-driven, ATS-friendly, JD language)
+// rather than recomputing positioning deterministically afterward.
+export const summaryWriterPrompt = `${honestyRules}
+Write the candidate's finished professional summary for the supplied job — ready to drop straight into the resume — plus its
+summaryClaims. Return nothing else: no roles, bullets, skills, certifications, or immutable facts.
+Read the full job description and the classified requirements, then write 2-3 short sentences (about 30-60 words) that make
+this candidate read as an obvious, qualified fit. Be brief and value-driven — every sentence must carry concrete evidence
+from the supplied profile, never filler.
+
+ATS — this is the priority:
+- Pull the job description's exact keywords into the summary verbatim — hard skills, tools/systems, certifications, and the
+  role title and competency phrases — so keyword-based ATS screening matches. Never paraphrase a JD keyword the candidate
+  genuinely supports: write "end-to-end recruitment", "applicant databases", or "Microsoft Office" exactly as the job does,
+  not "hiring process", "candidate records", or "MS tools".
+- Front-load the job's most important "must" keywords near the start of the summary.
+- Where the job uses both a spelled-out term and its acronym, include both (e.g. "Applicant Tracking System (ATS)").
+- Plain text only — standard words, no symbols, slashes, emojis, tables, or special characters that break ATS parsing. Use
+  the candidate's standard job-title vocabulary, never an invented hybrid title.
+
+Content:
+- Surface the points most relevant to THIS job, choosing from (not limited to): industry-relevant experience and the
+  strongest quantified outcomes, decisive credentials (degrees — especially for early-career candidates — certifications,
+  licenses), languages, and the tools the job names.
+- Lead with the job's headline "must" requirements the candidate genuinely supports, and open with the candidate's strongest
+  role-relevant identity and value. Never open with a "[current title] transitioning into [job title] opportunities"
+  template, and never lead with an "Intern" or trainee title when a stronger role exists in the profile.
+- Every summaryClaims.text value must appear verbatim as a contiguous span inside the summary. Include every mandatory claim
+  naturally; do not turn the summary into a keyword list or a string of fragments.
+
+Honesty:
+- Never invent a metric, employer, title, seniority, license, or responsibility; use only facts present in the supplied
+  profile and evidence. Do not claim a job title or professional identity the evidence does not support — for a genuine
+  career change, lead with the proven background instead of claiming prior experience in the target role.`;
 
 // Bullets are rewritten in their own call, constrained to plan-approved evidence.
 export const experienceWriterPrompt = `${honestyRules}${writingStyle}

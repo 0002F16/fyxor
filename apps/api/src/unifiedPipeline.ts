@@ -1666,33 +1666,6 @@ function stripUnsupportedGapSentences(summary: string): string {
     .trim();
 }
 
-function ensureSummaryPositioning(
-  summary: string,
-  plan: EvidencePlan,
-  profile: BaseProfile,
-  job: JobDescription
-): string {
-  if (plan.summaryBlueprint?.positioningMode !== "transition") return summary;
-  if (/\b(transition|targeting|seeking|moving toward|moving into)\b/i.test(summary)) return summary;
-  const currentRole = profile.experiences[0]?.role || profile.targetRole || "Professional";
-  return `${currentRole} transitioning into ${job.title} opportunities through directly transferable experience. ${summary}`
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function ensureSummaryLength(summary: string, job: JobDescription): string {
-  const additions = [
-    `These verified strengths support the core responsibilities, collaboration, and delivery expectations of the ${job.title} role.`,
-    "The profile combines careful execution, structured problem-solving, and reliable communication across day-to-day priorities and stakeholder needs."
-  ];
-  let result = summary.replace(/\s+/g, " ").trim();
-  for (const addition of additions) {
-    if (result.split(/\s+/).filter(Boolean).length >= 35) break;
-    result = `${result} ${addition}`.trim();
-  }
-  return result;
-}
-
 function summaryOutputUsable(
   output: Pick<WriterOutput, "summary" | "summaryClaims">,
   plan: EvidencePlan,
@@ -1700,7 +1673,9 @@ function summaryOutputUsable(
   job: JobDescription
 ): boolean {
   const wordCount = output.summary.trim().split(/\s+/).filter(Boolean).length;
-  if (wordCount < 35 || wordCount > 100 || !output.summaryClaims.length) return false;
+  // Brief, value-driven summaries (2-3 sentences) are intended; only reject genuinely
+  // empty/over-long output so good short prose isn't pushed into the template fallback.
+  if (wordCount < 25 || wordCount > 100 || !output.summaryClaims.length) return false;
   if (unsupportedSummaryNumbers(output.summary, profile).length) return false;
   if (normalized(output.summary) === normalized(profile.summary) && !summaryAlreadyFitsBlueprint(profile, job, plan)) return false;
   if (plan.summaryClaims.filter((claim) => claim.mandatory)
@@ -1898,8 +1873,6 @@ function sanitizeWriterOutput(
     });
     recoveries.push(recovery("summary-proof-point-restored", "corrected", "summary"));
   }
-  summary = ensureSummaryPositioning(summary, plan, profile, job);
-  summary = ensureSummaryLength(summary, job);
   if (output.certifications.some((certification) =>
     !profile.certifications.some((source) => normalized(source) === normalized(certification))
   )) {
