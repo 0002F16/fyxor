@@ -104,33 +104,12 @@ Add requirement IDs to every bullet objective. Preserve broad source coverage:
 do not reduce a substantial profile to a token skill list, and prioritize reporting, close, reconciliation, controls, audit,
 systems, process improvement, quantified outcomes, and stakeholder evidence relevant to the job.`;
 
-export const evidenceWriterPrompt = `${honestyRules}${writingStyle}
-Write only the mutable tailored content described by the validated evidence plan: summary, display titles, bullets, skills,
-and certifications. Preserve every evidence reference exactly. Copy certifications exactly as supplied; do not select,
-rename, or add them. Do not return contact details, employers, dates, education, or any other immutable fact. Use only
-plan-approved evidence and skills.
-Summary rules:
-- Follow the summary blueprint and write 35-100 words using 2-4 evidence-backed claims.
-- Every summaryClaims.text value must appear verbatim as a contiguous span inside the summary.
-- Phrase the summary in the job description's vocabulary: mirror the role's required competencies and terminology when they
-  truthfully describe supported or transferable evidence, and lead with the job's headline qualifications the candidate
-  genuinely supports.
-- Include every mandatory claim naturally; do not turn the summary into a keyword list.
-- A target professional identity is allowed only when summaryBlueprint.targetIdentityAllowed is true.
-- For transition or transferable positioning, lead with the proven background and state the intended move without claiming
-  prior employment in the target role.
-- Inferred context must retain provenance "inferred-context" and must not be expanded beyond the planned wording.`;
-
-// The summary is written in its own focused call so it gets the full job description
-// and classified requirements. Trust the model to write the finished prose: give it
-// strong, self-contained constraints (brief, value-driven, ATS-friendly, JD language)
-// rather than recomputing positioning deterministically afterward.
-export const summaryWriterPrompt = `${honestyRules}
-Write the candidate's finished professional summary for the supplied job — ready to drop straight into the resume — plus its
-summaryClaims. Return nothing else: no roles, bullets, skills, certifications, or immutable facts.
-Read the full job description and the classified requirements, then write exactly 3 short sentences (55-68 words total) that
-make this candidate read as an obvious, qualified fit. Be brief and value-driven — every sentence must carry concrete
-evidence from the supplied profile, never filler.
+// The single source of truth for how a tailored summary must read. Shared by the
+// per-section summary writer (initial tailor) and the combined writer used by the
+// regenerate path, so "Tailor to role" and the section "Regenerate" button stay in
+// lockstep: 3 sentences, 55-68 words, ATS-keyword-first, no template opener.
+export const summaryRules = `Write exactly 3 short sentences (55-68 words total) that make this candidate read as an obvious, qualified fit. Be brief and
+value-driven — every sentence must carry concrete evidence from the supplied profile, never filler.
 
 ATS — this is the priority:
 - Pull the job description's exact keywords into the summary verbatim — hard skills, tools/systems, certifications, and the
@@ -156,6 +135,26 @@ Honesty:
 - Never invent a metric, employer, title, seniority, license, or responsibility; use only facts present in the supplied
   profile and evidence. Do not claim a job title or professional identity the evidence does not support — for a genuine
   career change, lead with the proven background instead of claiming prior experience in the target role.`;
+
+// The combined writer is now used only by the regenerate path (regenerateUnifiedSection).
+// Its summary guidance is the shared summaryRules so a section "Regenerate" matches a
+// fresh "Tailor to role" exactly.
+export const evidenceWriterPrompt = `${honestyRules}${writingStyle}
+Write only the mutable tailored content described by the validated evidence plan: summary, display titles, bullets, skills,
+and certifications. Preserve every evidence reference exactly. Copy certifications exactly as supplied; do not select,
+rename, or add them. Do not return contact details, employers, dates, education, or any other immutable fact. Use only
+plan-approved evidence and skills.
+Summary rules:
+${summaryRules}`;
+
+// The summary is written in its own focused call so it gets the full job description
+// and classified requirements. Trust the model to write the finished prose under the
+// shared summaryRules rather than recomputing positioning deterministically afterward.
+export const summaryWriterPrompt = `${honestyRules}
+Write the candidate's finished professional summary for the supplied job — ready to drop straight into the resume — plus its
+summaryClaims. Return nothing else: no roles, bullets, skills, certifications, or immutable facts.
+Read the full job description and the classified requirements, then:
+${summaryRules}`;
 
 // Bullets are rewritten in their own call, constrained to plan-approved evidence.
 export const experienceWriterPrompt = `${honestyRules}${writingStyle}

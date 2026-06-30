@@ -1626,10 +1626,12 @@ function fallbackSummary(
     return `Relevant strengths for the ${job.title} role include ${list}.`;
   };
   let summary = [opener, proofSentence(summaryClaims)].filter(Boolean).join(" ").replace(/\s+/g, " ").trim();
-  if (summary.split(/\s+/).length < 35) {
+  // Keep this rare deterministic fallback in the same 55-80 band as the LLM summary
+  // gate (summaryOutputUsable) so a fallback summary doesn't read noticeably shorter.
+  if (summary.split(/\s+/).length < 55) {
     summary += ` These verified strengths provide a focused foundation for the core responsibilities and working context of the ${job.title} position.`;
   }
-  if (summary.split(/\s+/).length > 100) {
+  if (summary.split(/\s+/).length > 80) {
     const mandatory = summaryClaims.filter((claim) =>
     plan.summaryClaims.some((planned) => planned.id === claim.id && planned.mandatory)
     );

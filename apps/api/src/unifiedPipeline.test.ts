@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { BaseProfile, JobDescription } from "@cv-tailor/shared";
 import type { Generator } from "./openai";
 import { evidencePlanSchema } from "@cv-tailor/shared";
-import { generateUnifiedCv, sanitizeEvidencePlan, validateEvidencePlan, validateWriterOutput } from "./unifiedPipeline";
+import { generateUnifiedCv, regenerateUnifiedSection, sanitizeEvidencePlan, validateEvidencePlan, validateWriterOutput } from "./unifiedPipeline";
 
 const profile: BaseProfile = {
   id: "profile-1",
@@ -176,6 +176,37 @@ describe("unified evidence-first pipeline", () => {
     expect(cv.pipeline.recoveries).not.toEqual(expect.arrayContaining([
       expect.objectContaining({ code: "source-summary-restored" })
     ]));
+  });
+
+  it("regenerating the summary uses the shared spec and keeps the new summary verbatim", async () => {
+    const briefSummary = "Backend Engineer with hands-on TypeScript API delivery experience building reliable backend services for production workloads. Shipped TypeScript APIs used daily by 12 internal teams and kept release pipelines fast and dependable. Brings a proven record of delivering backend services that hold up under real production traffic.";
+    // First produce a unified CV (with an evidencePlan) the regenerate path can operate on.
+    const cv = await generateUnifiedCv({ generator: { generate: dispatchGenerator() }, profile, job, runId: "run-regen" });
+
+    let summaryInstruction = "";
+    const regenWriter = {
+      ...writer,
+      summary: briefSummary,
+      summaryClaims: [{
+        id: "claim-1",
+        text: "TypeScript API delivery experience",
+        evidence: [{ sourceExperienceId: "source-1", sourceBulletIndexes: [0] }]
+      }]
+    };
+    const generate = vi.fn(async ({ name, instructions }: { name: string; instructions: string }) => {
+      if (name === "regenerate_summary") { summaryInstruction = instructions; return regenWriter; }
+      if (name.startsWith("critic")) return critic;
+      return regenWriter;
+    }) as unknown as Generator["generate"];
+
+    const patch = await regenerateUnifiedSection({ generator: { generate }, profile, cv, section: "summary" });
+
+    // The regenerate summary call carries the same shared spec as a fresh tailor.
+    expect(summaryInstruction).toContain("3 short sentences");
+    expect(summaryInstruction).toContain("55-68");
+    if (patch.section !== "summary") throw new Error("expected a summary patch");
+    expect(patch.summary).toBe(briefSummary);
+    expect(patch.summary).not.toMatch(/transitioning into/i);
   });
 
   it("uses a conservative plan when the planner returns no usable source roles", async () => {
