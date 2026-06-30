@@ -16,13 +16,19 @@ import type { Generator } from "./openai.js";
 import {
   evidencePlannerPrompt,
   evidenceWriterPrompt,
+  experienceWriterPrompt,
   resumeCriticPrompt,
-  resumeRepairPrompt
+  resumeRepairPrompt,
+  skillsWriterPrompt,
+  summaryWriterPrompt
 } from "./prompts.js";
 import {
   llmCriticSchema,
   llmEvidencePlanSchema,
-  llmResumeWriterSchema
+  llmExperienceWriterSchema,
+  llmResumeWriterSchema,
+  llmSkillsWriterSchema,
+  llmSummaryWriterSchema
 } from "./schemas.js";
 import { evaluateTailoredCv } from "./resumeEval.js";
 
@@ -48,6 +54,18 @@ function normalized(value: string): string {
   return value.trim().toLocaleLowerCase().replace(/\s+/g, " ");
 }
 
+// Substring match, but require a word boundary for very short terms so that
+// ambiguous acronyms ("ap", "ar", "gl") don't match inside unrelated words
+// (e.g. "ap" inside "SAP" / "Variance Analysis").
+function matchesTerm(text: string, term: string): boolean {
+  const haystack = normalized(text);
+  const needle = normalized(term);
+  if (!needle) return false;
+  if (needle.length > 3) return haystack.includes(needle);
+  const escaped = needle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(?:^|[^\\p{L}\\p{N}])${escaped}(?:[^\\p{L}\\p{N}]|$)`, "u").test(haystack);
+}
+
 function numberTokens(value: string): string[] {
   return (value.match(/(?<![\p{L}\p{N}])(?:[$€£]\s*)?\d+(?:[.,]\d+)*(?:\s*[%x×+])?(?![\p{L}\p{N}])/gu) || [])
     .map((token) => token.replace(/\s+/g, "").toLocaleLowerCase());
@@ -65,11 +83,42 @@ function unsupportedSummaryNumbers(summary: string, profile: BaseProfile): strin
   return Array.from(new Set(numberTokens(summary).filter((token) => !allowed.has(token))));
 }
 
+const SKILL_FRAGMENT_STOPWORDS = new Set([
+  "training", "basic", "intermediate", "advanced", "beginner", "proficient",
+  "expert", "familiar", "knowledge", "experience", "skills", "etc"
+]);
+
+// Break one stored skill entry (which may be a compound blob like
+// "SAP (AR/AP, Account Statements, Oracle Financials (Training), Report Extraction)")
+// into distinct skills: the head term plus each comma-separated inner term.
+function splitSkillEntry(raw: string): string[] {
+  if (!raw) return [];
+  const fragments: string[] = [];
+  // Pull out parenthetical groups, recording both the head term and the inner list.
+  let head = raw.replace(/\(([^()]*)\)/g, (_match, inner: string) => {
+    for (const piece of String(inner).split(/[,;]/)) fragments.push(piece);
+    return " ";
+  });
+  // Some entries nest one more level; flatten a second pass on the head.
+  head = head.replace(/\(([^()]*)\)/g, (_match, inner: string) => {
+    for (const piece of String(inner).split(/[,;]/)) fragments.push(piece);
+    return " ";
+  });
+  for (const piece of head.split(/[,;]/)) fragments.push(piece);
+
+  const seen = new Map<string, string>();
+  for (const fragment of fragments) {
+    const cleaned = fragment.replace(/\s+/g, " ").trim();
+    if (cleaned.length < 2) continue;
+    const key = normalized(cleaned);
+    if (SKILL_FRAGMENT_STOPWORDS.has(key)) continue;
+    if (!seen.has(key)) seen.set(key, cleaned);
+  }
+  return [...seen.values()];
+}
+
 function profileSkillSet(profile: BaseProfile): Set<string> {
-  return new Set([
-    ...profile.skills,
-    ...Object.values(profile.skillCategories).flat()
-  ].map(normalized));
+  return new Set(profileSkills(profile).map(normalized));
 }
 
 function summaryEvidenceKey(reference: SummaryEvidenceReference): string {
@@ -302,6 +351,160 @@ const BASELINE_SKILLS = [
   { skill: "Time Management", terms: ["time management", "deadlines"] },
   { skill: "Organization", terms: ["organization", "organisational", "organizational"] }
 ] as const;
+type SkillDomain =
+  | "accounting" | "data-analysis" | "compliance" | "admin" | "software"
+  | "operations" | "sales-marketing" | "hr" | "customer-support" | "psychology";
+
+// Domain-specific skills the pipeline may infer (as inferred-baseline) for the
+// target role — even when the JD does not literally name them. Drives both
+// same-domain enrichment and transferable/adjacent transitions.
+const DOMAIN_SKILLS: Record<SkillDomain, { skill: string; terms: string[] }[]> = {
+  accounting: [
+    { skill: "Accounts Payable", terms: ["accounts payable", "ap", "payables"] },
+    { skill: "Accounts Receivable", terms: ["accounts receivable", "ar", "receivables"] },
+    { skill: "Reconciliations", terms: ["reconcil", "reconciliation"] },
+    { skill: "Journal Entries", terms: ["journal entr", "journal"] },
+    { skill: "Month-End Close", terms: ["month end", "month-end", "closing", "period close"] },
+    { skill: "General Ledger", terms: ["general ledger", "gl"] },
+    { skill: "Financial Reporting", terms: ["financial reporting", "financial statement"] },
+    { skill: "Accruals", terms: ["accrual"] },
+    { skill: "ERP Systems", terms: ["erp", "sap", "oracle", "netsuite", "quickbooks"] }
+  ],
+  "data-analysis": [
+    { skill: "SQL", terms: ["sql", "queries", "database"] },
+    { skill: "Data Visualization", terms: ["data visualization", "dashboard", "visualisation"] },
+    { skill: "Excel Modeling", terms: ["excel model", "spreadsheet model", "financial model"] },
+    { skill: "Statistical Analysis", terms: ["statistic", "regression", "forecasting"] },
+    { skill: "Reporting Dashboards", terms: ["reporting", "kpi", "metrics"] },
+    { skill: "Power BI", terms: ["power bi", "powerbi"] },
+    { skill: "Tableau", terms: ["tableau"] },
+    { skill: "Data Cleaning", terms: ["data cleaning", "data cleansing", "data wrangling"] }
+  ],
+  compliance: [
+    { skill: "KYC", terms: ["kyc", "know your customer"] },
+    { skill: "AML", terms: ["aml", "anti-money laundering", "anti money laundering"] },
+    { skill: "Customer Due Diligence", terms: ["due diligence", "cdd", "edd"] },
+    { skill: "Risk Assessment", terms: ["risk assessment", "risk analysis", "risk"] },
+    { skill: "Regulatory Compliance", terms: ["regulatory", "compliance", "regulation"] },
+    { skill: "Transaction Monitoring", terms: ["transaction monitoring", "monitoring"] },
+    { skill: "Sanctions Screening", terms: ["sanctions", "screening", "pep"] },
+    { skill: "Case Documentation", terms: ["case documentation", "case management", "sar"] }
+  ],
+  admin: [
+    { skill: "Calendar Management", terms: ["calendar", "scheduling", "diary"] },
+    { skill: "Document Management", terms: ["document management", "filing", "documentation"] },
+    { skill: "Data Entry", terms: ["data entry"] },
+    { skill: "Stakeholder Coordination", terms: ["stakeholder", "coordination", "liaison"] },
+    { skill: "Records Management", terms: ["records management", "record keeping", "recordkeeping"] }
+  ],
+  software: [
+    { skill: "Python", terms: ["python"] },
+    { skill: "JavaScript", terms: ["javascript", "typescript", "node"] },
+    { skill: "Git", terms: ["git", "version control"] },
+    { skill: "API Development", terms: ["api", "rest", "graphql"] },
+    { skill: "Debugging", terms: ["debug", "troubleshoot"] },
+    { skill: "Automated Testing", terms: ["testing", "unit test", "qa"] }
+  ],
+  operations: [
+    { skill: "Process Improvement", terms: ["process improvement", "process", "lean", "six sigma"] },
+    { skill: "Project Coordination", terms: ["project", "coordination", "planning"] },
+    { skill: "Vendor Management", terms: ["vendor", "supplier", "procurement"] },
+    { skill: "Inventory Management", terms: ["inventory", "stock", "supply chain"] },
+    { skill: "Workflow Optimization", terms: ["workflow", "optimization", "efficiency"] }
+  ],
+  "sales-marketing": [
+    { skill: "CRM", terms: ["crm", "salesforce", "hubspot"] },
+    { skill: "Lead Generation", terms: ["lead generation", "prospecting", "leads"] },
+    { skill: "Market Research", terms: ["market research", "market analysis"] },
+    { skill: "Content Creation", terms: ["content", "copywriting", "social media"] },
+    { skill: "Campaign Management", terms: ["campaign", "marketing campaign"] }
+  ],
+  hr: [
+    { skill: "Recruitment", terms: ["recruit", "talent acquisition", "hiring", "sourcing"] },
+    { skill: "Onboarding", terms: ["onboarding"] },
+    { skill: "Employee Relations", terms: ["employee relations", "er"] },
+    { skill: "HRIS", terms: ["hris", "workday", "people system"] },
+    { skill: "Performance Management", terms: ["performance management", "appraisal"] }
+  ],
+  "customer-support": [
+    { skill: "Customer Service", terms: ["customer service", "customer support", "client service"] },
+    { skill: "Ticketing Systems", terms: ["ticketing", "zendesk", "helpdesk", "service desk"] },
+    { skill: "Conflict Resolution", terms: ["conflict resolution", "de-escalation", "complaints"] },
+    { skill: "Client Onboarding", terms: ["client onboarding", "account setup"] }
+  ],
+  psychology: [
+    { skill: "Behavioral Analysis", terms: ["behavioral", "behaviour", "behavioral analysis"] },
+    { skill: "Interviewing", terms: ["interview", "assessment"] },
+    { skill: "Active Listening", terms: ["active listening", "listening", "empathy"] },
+    { skill: "Report Writing", terms: ["report writing", "case notes"] },
+    { skill: "Case Management", terms: ["case management", "caseload"] }
+  ]
+};
+
+// Keywords that signal a domain in the job (target) or profile (source) text.
+const DOMAIN_KEYWORDS: Record<SkillDomain, string[]> = {
+  accounting: ["account", "accounts payable", "accounts receivable", "ledger", "reconcil",
+    "bookkeep", "audit", "tax", "invoice", "financial statement", "month end", "ap ", "ar ", "finance"],
+  "data-analysis": ["data analy", "data analyst", "analytics", "sql", "power bi", "tableau",
+    "dashboard", "reporting", "statistic", "insight", "business intelligence", "bi "],
+  compliance: ["kyc", "aml", "anti-money", "due diligence", "compliance", "regulatory",
+    "sanctions", "fraud", "risk", "onboarding analyst", "transaction monitoring"],
+  admin: ["administrat", "admin assistant", "office", "clerical", "data entry", "secretar",
+    "receptionist", "coordinator", "scheduling"],
+  software: ["software", "developer", "engineer", "programming", "frontend", "backend",
+    "full stack", "api", "web develop"],
+  operations: ["operations", "logistics", "supply chain", "procurement", "process improvement",
+    "project coordinat", "operations analyst"],
+  "sales-marketing": ["sales", "marketing", "business development", "account executive",
+    "campaign", "seo", "growth", "brand"],
+  hr: ["human resources", "hr ", "recruit", "talent", "people operations", "onboarding specialist"],
+  "customer-support": ["customer service", "customer support", "client support", "help desk",
+    "service desk", "call center", "contact center"],
+  psychology: ["psycholog", "counsel", "behavioral", "mental health", "social work", "therap"]
+};
+
+// Adjacent domains whose skills transfer — used to seed transition bridges.
+const DOMAIN_ADJACENCY: Record<SkillDomain, SkillDomain[]> = {
+  accounting: ["data-analysis", "compliance", "operations", "admin"],
+  "data-analysis": ["accounting", "operations", "software", "compliance"],
+  compliance: ["accounting", "data-analysis", "admin", "operations"],
+  admin: ["compliance", "operations", "customer-support", "hr"],
+  software: ["data-analysis", "operations"],
+  operations: ["accounting", "data-analysis", "admin", "sales-marketing"],
+  "sales-marketing": ["operations", "customer-support", "data-analysis"],
+  hr: ["admin", "psychology", "customer-support"],
+  "customer-support": ["admin", "sales-marketing", "compliance"],
+  psychology: ["hr", "compliance", "customer-support", "admin"]
+};
+
+// Every skill the pipeline is allowed to infer (universal baselines + all domains).
+const INFERRED_SKILL_ALLOWED = new Set<string>([
+  ...BASELINE_SKILLS.map((entry) => normalized(entry.skill)),
+  ...Object.values(DOMAIN_SKILLS).flat().map((entry) => normalized(entry.skill))
+]);
+
+function detectDomainsFromText(text: string): SkillDomain[] {
+  const haystack = normalized(text);
+  return (Object.keys(DOMAIN_KEYWORDS) as SkillDomain[]).filter((domain) =>
+    DOMAIN_KEYWORDS[domain].some((keyword) => haystack.includes(keyword))
+  );
+}
+
+function detectTargetDomains(job?: JobDescription): SkillDomain[] {
+  if (!job) return [];
+  return detectDomainsFromText(`${job.title} ${job.title} ${job.description}`);
+}
+
+function detectSourceDomains(profile: BaseProfile): SkillDomain[] {
+  const text = [
+    profile.summary,
+    profile.positioning?.level || "",
+    ...profile.experiences.map((role) => role.role),
+    ...profileSkills(profile)
+  ].join(" ");
+  return detectDomainsFromText(text);
+}
+
 const EXCEL_ECOSYSTEM = ["excel", "power query", "pivot table", "vlookup", "macro"];
 const IMPORTANT_EVIDENCE_TERMS = [
   "report", "month end", "close", "reconcil", "control", "audit", "excel", "system",
@@ -335,7 +538,7 @@ function profileSkills(profile: BaseProfile): string[] {
   return Array.from(new Map([
     ...profile.skills,
     ...Object.values(profile.skillCategories).flat()
-  ].filter(Boolean).map((skill) => [normalized(skill), skill])).values());
+  ].filter(Boolean).flatMap(splitSkillEntry).map((skill) => [normalized(skill), skill])).values());
 }
 
 function categoryForSkill(profile: BaseProfile, skill: string): string {
@@ -641,19 +844,26 @@ function enrichPlanSkills(
   }
 
   const jobText = `${job?.title || ""} ${job?.description || ""}`;
-  for (const baseline of BASELINE_SKILLS) {
-    const requested = baseline.terms.some((term) => normalized(jobText).includes(term));
-    const explicitlyCovered = source.some((skill) =>
-      normalized(skill).includes(normalized(baseline.skill)) ||
-      baseline.terms.some((term) => normalized(skill).includes(term))
+  const budget = pageTarget === "two" ? { target: 24, maximum: 36 } : { target: 16, maximum: 24 };
+
+  // Infer a catalog skill (unless the source already covers it) with requirement
+  // links where the JD references it.
+  const alreadyCovered = (entry: { skill: string; terms: readonly string[] }) =>
+    result.has(normalized(entry.skill)) ||
+    source.some((skill) =>
+      matchesTerm(skill, entry.skill) ||
+      entry.terms.some((term) => matchesTerm(skill, term))
     );
-    if (requested && !explicitlyCovered) {
-      const requirementIds = requirements
-        .filter((requirement) => baseline.terms.some((term) => normalized(requirement.text).includes(term)))
-        .map((requirement) => requirement.id);
-      add(baseline.skill, "inferred-baseline", requirementIds, [], []);
-    }
-  }
+  const addInferred = (entry: { skill: string; terms: readonly string[] }) => {
+    if (alreadyCovered(entry)) return;
+    const requirementIds = requirements
+      .filter((requirement) => entry.terms.some((term) => matchesTerm(requirement.text, term)))
+      .map((requirement) => requirement.id);
+    add(entry.skill, "inferred-baseline", requirementIds, [], []);
+  };
+
+  // Source-skill ranking comes first so real, evidence-backed skills win the
+  // budget before any inferred skills top it up.
   const excelRequested = /\bexcel\b/i.test(jobText);
   const ranked = source.map((skill, index) => {
     const requirementScore = requirements.reduce((best, requirement) => {
@@ -666,8 +876,7 @@ function enrichPlanSkills(
     return { skill, index, score: requirementScore + jobScore + excelScore + evidenceScore };
   }).sort((left, right) => right.score - left.score || left.index - right.index);
 
-  const budget = pageTarget === "two" ? { target: 24, maximum: 36 } : { target: 16, maximum: 24 };
-  for (const candidate of ranked.filter((item) => item.score >= 60)) {
+  for (const candidate of ranked.filter((item) => item.score >= 25)) {
     if (result.size >= budget.maximum) break;
     add(candidate.skill, "explicit", [], [candidate.skill]);
   }
@@ -680,11 +889,40 @@ function enrichPlanSkills(
     });
     if (relatedToIncludedSkill) add(sourceSkill, "explicit", [], [sourceSkill]);
   }
-  const minimum = source.length >= 8 ? 8 : source.length;
+  // Retain broadly even on weak matches: keep most source skills rather than
+  // pruning a profile down to a token list.
+  const minimum = Math.min(source.length, 12);
   const target = Math.min(budget.target, source.length);
   for (const candidate of ranked) {
     if (result.size >= Math.max(minimum, target) || result.size >= budget.maximum) break;
     add(candidate.skill, "explicit", [], [candidate.skill]);
+  }
+
+  // Universal baselines are always eligible — Excel/MS Office and core soft skills
+  // belong on essentially any resume regardless of whether the JD names them.
+  // Added after source skills so real evidence keeps priority on the budget.
+  for (const baseline of BASELINE_SKILLS) {
+    if (result.size >= budget.maximum) break;
+    addInferred(baseline);
+  }
+
+  // Top up with target-domain inferred skills (and transferable/adjacent bridges).
+  // Driven by the TARGET role; falls back to source domains when the JD is thin.
+  const targetDomains = detectTargetDomains(job);
+  const sourceDomains = detectSourceDomains(profile);
+  const seededDomains = new Set<SkillDomain>(targetDomains.length ? targetDomains : sourceDomains);
+  for (const sourceDomain of sourceDomains) {
+    const bridges = DOMAIN_ADJACENCY[sourceDomain] || [];
+    if (targetDomains.some((target) => target === sourceDomain || bridges.includes(target) ||
+      (DOMAIN_ADJACENCY[target] || []).includes(sourceDomain))) {
+      seededDomains.add(sourceDomain);
+    }
+  }
+  for (const domain of seededDomains) {
+    for (const entry of DOMAIN_SKILLS[domain]) {
+      if (result.size >= budget.maximum) break;
+      addInferred(entry);
+    }
   }
 
   return [...result.values()];
@@ -787,10 +1025,10 @@ function buildSummaryBlueprint(
     positioningMode: safeMode,
     positioningStrategy: input.summaryBlueprint?.positioningStrategy ||
       (safeMode === "transition"
-        ? "Lead with the proven background and explicitly frame the move into the target function."
+        ? "Lead with the proven background framed in the job's required competencies, and explicitly frame the move into the target function."
         : safeMode === "education-led"
-          ? "Lead with relevant education, projects, and demonstrated technical evidence."
-          : "Lead with the strongest supported evidence for the target role."),
+          ? "Lead with relevant education, projects, and demonstrated technical evidence, described in the job's own terminology."
+          : "Lead with the job's headline required competencies, backed by the strongest supported evidence for the target role."),
     targetIdentityAllowed,
     decisiveRequirementIds,
     claimIds: claims.map((claim) => claim.id)
@@ -844,10 +1082,7 @@ export function sanitizeEvidencePlan(
 ): { plan: EvidencePlan; recoveries: Recovery[] } {
   const recoveries: Recovery[] = [];
   const sourceById = new Map(profile.experiences.map((role) => [role.id, role]));
-  const sourceSkills = new Map([
-    ...profile.skills,
-    ...Object.values(profile.skillCategories).flat()
-  ].map((skill) => [normalized(skill), skill]));
+  const sourceSkills = new Map(profileSkills(profile).map((skill) => [normalized(skill), skill]));
   const requirements = classifyRequirements(input.requirements, profile, job);
   const requirementIds = new Set(requirements.map((requirement) => requirement.id));
   const seenRoles = new Set<string>();
@@ -1180,7 +1415,7 @@ export function validateEvidencePlan(plan: EvidencePlan, profile: BaseProfile): 
   }
   for (const skill of plan.skills) {
     const allowedInference = skill.provenance === "inferred-baseline" &&
-      BASELINE_SKILLS.some((entry) => normalized(entry.skill) === normalized(skill.skill));
+      INFERRED_SKILL_ALLOWED.has(normalized(skill.skill));
     if (!skills.has(normalized(skill.skill)) && !allowedInference) findings.push(`Unsupported skill ${skill.skill}`);
     if (skill.requirementIds.some((id) => !requirementIds.has(id))) findings.push(`Skill ${skill.skill} references an unknown requirement`);
     skill.evidence.forEach((reference) => validateReference(reference.sourceExperienceId, reference.sourceBulletIndexes, `Skill ${skill.skill}`));
@@ -1294,6 +1529,42 @@ function skillCategoriesFromPlan(plan: EvidencePlan): Array<{ name: string; skil
   return [...categories].map(([name, skills]) => ({ name, skills }));
 }
 
+// Honor the skills-writer call's grouping while enforcing that it only regroups
+// plan-approved skills: drop any skill the plan did not approve, place any approved
+// skill the writer missed into a catch-all, and fall back to the deterministic
+// plan grouping if the writer output is empty or covers nothing valid.
+function skillCategoriesFromWriter(
+  categories: Array<{ name: string; skills: string[] }>,
+  plan: EvidencePlan
+): Array<{ name: string; skills: string[] }> {
+  const approved = new Map(plan.skills.map((skill) => [normalized(skill.skill), skill.skill]));
+  const placed = new Set<string>();
+  const result: Array<{ name: string; skills: string[] }> = [];
+  for (const category of categories) {
+    const name = category.name.trim() || "Skills";
+    const skills: string[] = [];
+    for (const skill of category.skills) {
+      const key = normalized(skill);
+      const canonical = approved.get(key);
+      if (!canonical || placed.has(key)) continue;
+      placed.add(key);
+      skills.push(canonical);
+    }
+    if (skills.length) {
+      const existing = result.find((entry) => normalized(entry.name) === normalized(name));
+      if (existing) existing.skills.push(...skills);
+      else result.push({ name, skills });
+    }
+  }
+  if (!result.length) return skillCategoriesFromPlan(plan);
+  const missing = plan.skills.filter((skill) => !placed.has(normalized(skill.skill)));
+  if (missing.length) {
+    const catchAll = result.find((entry) => normalized(entry.name) === "skills") || result[result.length - 1]!;
+    catchAll.skills.push(...missing.map((skill) => skill.skill));
+  }
+  return result;
+}
+
 function compactEvidenceText(reference: SummaryEvidenceReference, profile: BaseProfile): string {
   const text = summaryEvidenceText(reference, profile).trim();
   if (!text) return "";
@@ -1344,10 +1615,18 @@ function fallbackSummary(
   }).filter((claim, index, claims) =>
     claims.findIndex((entry) => normalized(entry.text) === normalized(claim.text)) === index
   );
-  const evidenceSentences = summaryClaims.map((claim) => `${claim.text.replace(/[.!?]+$/, "")}.`);
-  let summary = [opener, ...evidenceSentences].join(" ").replace(/\s+/g, " ").trim();
-  const words = summary.split(/\s+/);
-  if (words.length < 35) {
+  // Weave the proof points into one flowing sentence rather than emitting each as a
+  // choppy standalone fragment ("English (Native/C2). HRIS & Employee Data Management.").
+  const proofSentence = (claims: typeof summaryClaims): string => {
+    const points = claims.map((claim) => claim.text.replace(/[.!?]+$/, "").trim()).filter(Boolean);
+    if (!points.length) return "";
+    const list = points.length === 1
+      ? points[0]!
+      : `${points.slice(0, -1).join(", ")} and ${points[points.length - 1]}`;
+    return `Relevant strengths for the ${job.title} role include ${list}.`;
+  };
+  let summary = [opener, proofSentence(summaryClaims)].filter(Boolean).join(" ").replace(/\s+/g, " ").trim();
+  if (summary.split(/\s+/).length < 35) {
     summary += ` These verified strengths provide a focused foundation for the core responsibilities and working context of the ${job.title} position.`;
   }
   if (summary.split(/\s+/).length > 100) {
@@ -1356,10 +1635,7 @@ function fallbackSummary(
     );
     const optional = summaryClaims.filter((claim) => !mandatory.some((entry) => entry.id === claim.id));
     const selected = [...mandatory, ...optional].slice(0, Math.max(1, 3 - mandatory.length + mandatory.length));
-    summary = [opener, ...selected.map((claim) => `${claim.text.replace(/[.!?]+$/, "")}.`)]
-      .join(" ")
-      .replace(/\s+/g, " ")
-      .trim();
+    summary = [opener, proofSentence(selected)].filter(Boolean).join(" ").replace(/\s+/g, " ").trim();
     return { summary, summaryClaims: selected };
   }
   return { summary, summaryClaims };
@@ -1582,7 +1858,11 @@ function sanitizeWriterOutput(
 
   let summary = candidateSummary;
   let finalSummaryClaims: WriterOutput["summaryClaims"] = summaryClaims;
+  // Allow inferred-baseline skills that are explicit JD requirements — using JD vocabulary in the
+  // summary is intentional alignment, not fabrication. Still block skills the JD doesn't mention.
+  const jdText = normalized(`${job?.title || ""} ${job?.description || ""}`);
   const inferredSummaryClaim = inferredSkills.some((skill) =>
+    !jdText.includes(normalized(skill.skill)) &&
     normalized(summary).includes(normalized(skill.skill)) &&
     !normalized(profile.summary).includes(normalized(skill.skill))
   );
@@ -1631,7 +1911,7 @@ function sanitizeWriterOutput(
       summary,
       summaryClaims: finalSummaryClaims,
       roles,
-      skillCategories: skillCategoriesFromPlan(plan),
+      skillCategories: skillCategoriesFromWriter(output.skillCategories, plan),
       skillEvidence: plan.skills.map((skill) => ({
         skill: skill.skill,
         evidence: skill.evidence,
@@ -1872,12 +2152,45 @@ export async function generateUnifiedCv(input: {
   }
 
   await onProgress("writing", 40);
-  let rawWriter = llmResumeWriterSchema.parse(await timed("writing", stages, () => generator.generate({
-    name: "resume_writer",
-    schema: llmResumeWriterSchema,
-    instructions: evidenceWriterPrompt,
+  const summaryOut = llmSummaryWriterSchema.parse(await timed("writing_summary", stages, () => generator.generate({
+    name: "resume_summary",
+    schema: llmSummaryWriterSchema,
+    instructions: summaryWriterPrompt,
+    payload: {
+      plan,
+      job,
+      requirements: plan.requirements,
+      summaryBlueprint: plan.summaryBlueprint,
+      summaryClaims: plan.summaryClaims,
+      summaryEvidenceCatalogue: summaryEvidenceCatalogue(profile)
+    }
+  }), generator));
+  const experienceOut = llmExperienceWriterSchema.parse(await timed("writing_experience", stages, () => generator.generate({
+    name: "resume_experience",
+    schema: llmExperienceWriterSchema,
+    instructions: experienceWriterPrompt,
     payload: { plan, evidence: profile, job }
   }), generator));
+  const skillsOut = llmSkillsWriterSchema.parse(await timed("writing_skills", stages, () => generator.generate({
+    name: "resume_skills",
+    schema: llmSkillsWriterSchema,
+    instructions: skillsWriterPrompt,
+    payload: { skills: plan.skills, job }
+  }), generator));
+  let rawWriter: WriterOutput = {
+    summary: summaryOut.summary,
+    summaryClaims: summaryOut.summaryClaims,
+    roles: experienceOut.roles,
+    skillCategories: skillsOut.skillCategories,
+    skillEvidence: plan.skills.map((skill) => ({
+      skill: skill.skill,
+      evidence: skill.evidence,
+      provenance: skill.provenance,
+      sourceSkills: skill.sourceSkills,
+      requirementIds: skill.requirementIds
+    })),
+    certifications: profile.certifications
+  };
   let sanitizedWriter = sanitizeWriterOutput(rawWriter, plan, profile, job);
   let writer = sanitizedWriter.writer;
   recoveries.push(...sanitizedWriter.recoveries);
@@ -1946,7 +2259,7 @@ export async function generateUnifiedCv(input: {
       provider,
       model,
       stages,
-      aiCallCount: stages.filter((stage) => ["planning", "writing", "critic", "repairing", "critic_recheck"].includes(stage.name)).length,
+      aiCallCount: stages.filter((stage) => ["planning", "writing_summary", "writing_experience", "writing_skills", "critic", "repairing", "critic_recheck"].includes(stage.name)).length,
       repairCount: stages.some((stage) => stage.name === "repairing") ? 1 : 0,
       recoveries
     },

@@ -113,13 +113,35 @@ const critic = {
   findings: []
 };
 
+// The writer now runs as three section calls (resume_summary / resume_experience /
+// resume_skills). This mock dispatches by the generate() call name so tests stay
+// robust to call count and order. A writer-shaped fixture is split into its sections.
+function dispatchGenerator(overrides: {
+  plan?: unknown;
+  writer?: typeof writer | Record<string, any>;
+  critic?: unknown;
+  repair?: typeof writer | Record<string, any>;
+  criticRecheck?: unknown;
+} = {}): Generator["generate"] {
+  const w = (overrides.writer ?? writer) as Record<string, any>;
+  const map: Record<string, unknown> = {
+    evidence_plan: overrides.plan ?? plan,
+    resume_summary: { summary: w.summary, summaryClaims: w.summaryClaims },
+    resume_experience: { roles: w.roles },
+    resume_skills: { skillCategories: w.skillCategories },
+    resume_critic: overrides.critic ?? critic,
+    resume_critic_recheck: overrides.criticRecheck ?? overrides.critic ?? critic,
+    resume_repair: overrides.repair ?? w
+  };
+  return vi.fn(async ({ name }: { name: string }) => map[name]) as unknown as Generator["generate"];
+}
+
 describe("unified evidence-first pipeline", () => {
   it("uses planner, writer, and critic once and preserves immutable facts", async () => {
-    const responses = [plan, writer, critic];
-    const generate = vi.fn(async () => responses.shift()) as unknown as Generator["generate"];
+    const generate = dispatchGenerator();
     const cv = await generateUnifiedCv({ generator: { generate }, profile, job, runId: "run-1", provider: "gemini-api", model: "test-model" });
 
-    expect(generate).toHaveBeenCalledTimes(3);
+    expect(generate).toHaveBeenCalledTimes(5);
     expect(cv.contact).toEqual(profile.contact);
     expect(cv.experiences[0]).toMatchObject({
       company: "Acme",
@@ -131,7 +153,7 @@ describe("unified evidence-first pipeline", () => {
     });
     expect(cv.experiences[0]?.bullets[0]).toMatchObject({ sourceBulletIndexes: [0], evidenceStatus: "verified" });
     expect(cv.readiness).toBe("ready");
-    expect(cv.pipeline.aiCallCount).toBe(3);
+    expect(cv.pipeline.aiCallCount).toBe(5);
   });
 
   it("uses a conservative plan when the planner returns no usable source roles", async () => {
@@ -148,10 +170,9 @@ describe("unified evidence-first pipeline", () => {
         }]
       }]
     };
-    const responses = [invalid, safeWriter, critic];
-    const generate = vi.fn(async () => responses.shift()) as unknown as Generator["generate"];
+    const generate = dispatchGenerator({ plan: invalid, writer: safeWriter });
     const cv = await generateUnifiedCv({ generator: { generate }, profile, job, runId: "run-2" });
-    expect(generate).toHaveBeenCalledTimes(3);
+    expect(generate).toHaveBeenCalledTimes(5);
     expect(cv.experiences[0]?.role).toBe("Software Developer");
     expect(cv.pipeline.recoveries).toEqual(expect.arrayContaining([
       expect.objectContaining({ code: "safe-plan-used", severity: "degraded" })
@@ -163,10 +184,9 @@ describe("unified evidence-first pipeline", () => {
       ...writer,
       roles: [{ ...writer.roles[0]!, bullets: [{ ...writer.roles[0]!.bullets[0]!, text: "Improved throughput by 40%." }] }]
     };
-    const responses = [plan, unsafeWriter, critic, writer];
-    const generate = vi.fn(async () => responses.shift()) as unknown as Generator["generate"];
+    const generate = dispatchGenerator({ writer: unsafeWriter, repair: writer });
     const cv = await generateUnifiedCv({ generator: { generate }, profile, job, runId: "run-3" });
-    expect(generate).toHaveBeenCalledTimes(4);
+    expect(generate).toHaveBeenCalledTimes(6);
     expect(cv.experiences[0]?.bullets[0]?.text).toContain("12 internal teams");
     expect(cv.pipeline.repairCount).toBe(1);
     expect(cv.readiness).toBe("ready");
@@ -204,8 +224,7 @@ describe("unified evidence-first pipeline", () => {
       roles: [{ ...writer.roles[0]!, displayTitle: "Engineering Manager" }],
       certifications: ["Renamed ACCA Certificate"]
     };
-    const responses = [weakPlan, unsafeWriter, critic];
-    const generate = vi.fn(async () => responses.shift()) as unknown as Generator["generate"];
+    const generate = dispatchGenerator({ plan: weakPlan, writer: unsafeWriter });
     const cv = await generateUnifiedCv({
       generator: { generate },
       profile: certifiedProfile,
@@ -214,10 +233,11 @@ describe("unified evidence-first pipeline", () => {
     });
 
     expect(cv.experiences[0]?.role).toBe("Software Developer");
+    // Certifications are now deterministic — copied from the profile and never
+    // written by the LLM — so a renamed cert in the plan cannot reach the CV.
     expect(cv.certifications).toEqual(certifiedProfile.certifications);
     expect(cv.pipeline.recoveries).toEqual(expect.arrayContaining([
-      expect.objectContaining({ code: "title-reframe-reverted" }),
-      expect.objectContaining({ code: "writer-certifications-ignored" })
+      expect.objectContaining({ code: "title-reframe-reverted" })
     ]));
     expect(cv.readiness).toBe("ready");
   });
@@ -260,8 +280,7 @@ describe("unified evidence-first pipeline", () => {
       skillCategories: [{ name: "Cloud", skills: ["Kubernetes"] }],
       certifications: ["Invented Certification"]
     };
-    const responses = [plan, invalidWriter, critic];
-    const generate = vi.fn(async () => responses.shift()) as unknown as Generator["generate"];
+    const generate = dispatchGenerator({ writer: invalidWriter });
     const cv = await generateUnifiedCv({ generator: { generate }, profile, job, runId: "run-sanitize-writer" });
 
     expect(cv.experiences[0]?.role).toBe("Backend Developer");
@@ -275,8 +294,7 @@ describe("unified evidence-first pipeline", () => {
     const emptyProfile = { ...profile, experiences: [], summary: "", rawText: "" };
     const emptyPlan = { ...plan, summaryClaims: [], roles: [], skills: [], certifications: [] };
     const emptyWriter = { ...writer, summary: "", summaryClaims: [], roles: [], skillCategories: [], skillEvidence: [], certifications: [] };
-    const responses = [emptyPlan, emptyWriter, critic, emptyWriter];
-    const generate = vi.fn(async () => responses.shift()) as unknown as Generator["generate"];
+    const generate = dispatchGenerator({ plan: emptyPlan, writer: emptyWriter, repair: emptyWriter });
     const cv = await generateUnifiedCv({ generator: { generate }, profile: emptyProfile, job, runId: "run-empty" });
 
     expect(cv.experiences).toEqual([]);
@@ -394,8 +412,7 @@ describe("unified evidence-first pipeline", () => {
       skillEvidence: [],
       certifications: []
     };
-    const responses = [sparsePlan, sparseWriter, critic];
-    const generate = vi.fn(async () => responses.shift()) as unknown as Generator["generate"];
+    const generate = dispatchGenerator({ plan: sparsePlan, writer: sparseWriter });
     const cv = await generateUnifiedCv({
       generator: { generate },
       profile: accountingProfile,
@@ -447,10 +464,10 @@ describe("unified evidence-first pipeline", () => {
   });
 
   it("removes inferred baseline wording from summary and bullets while retaining it in skills", async () => {
-    const communicationJob = {
-      ...job,
-      description: `${job.description} Strong communication is required.`
-    };
+    // The JD deliberately does NOT name "communication": an inferred-baseline skill
+    // the job does not mention must not leak into the summary or bullets (it may only
+    // appear in the skills section). When the JD does name it, keeping it is intended.
+    const communicationJob = { ...job };
     const inferredPlan = {
       ...plan,
       requirements: [
@@ -489,8 +506,7 @@ describe("unified evidence-first pipeline", () => {
       skillCategories: [{ name: "Professional Skills", skills: ["Communication", "TypeScript"] }],
       skillEvidence: []
     };
-    const responses = [inferredPlan, leakingWriter, critic];
-    const generate = vi.fn(async () => responses.shift()) as unknown as Generator["generate"];
+    const generate = dispatchGenerator({ plan: inferredPlan, writer: leakingWriter });
     const cv = await generateUnifiedCv({ generator: { generate }, profile, job: communicationJob, runId: "inferred-scope" });
 
     expect(cv.skills).toContain("Communication");

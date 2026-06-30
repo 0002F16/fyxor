@@ -44,13 +44,25 @@ The extension can override per-request via the `x-ai-provider` header.
 
 ## Tailoring pipeline
 
-The default is the unified evidence-first pipeline: evidence plan → constrained
-writer → independent critic → targeted repair when required. Tailoring runs are
-persisted in `tailoring_runs` and exposed through `/api/tailoring-runs`.
-Unified v3 sanitizes recoverable plan/writer mistakes, copies certifications and
-languages exactly from the base profile, expands under-selected source skills and
-bullets deterministically, and uses source-backed fallbacks before allowing a
-factual issue to block export.
+The default is the unified evidence-first pipeline (v4): evidence plan → three
+focused writer calls (summary, experience/bullets, skills) → independent critic →
+targeted repair when required. Tailoring runs are persisted in `tailoring_runs`
+and exposed through `/api/tailoring-runs`.
+
+The writer is split into three sequential LLM calls so a failure in one section
+cannot poison the others:
+- `resume_summary` (`summaryWriterPrompt`): reads the full job title + scraped
+  description + classified requirements; mirrors the JD's exact terminology.
+- `resume_experience` (`experienceWriterPrompt`): rewrites bullets constrained to
+  plan-approved source evidence.
+- `resume_skills` (`skillsWriterPrompt`): groups the plan-approved skills into
+  themed categories; may not add, drop, or rename any skill.
+
+Certifications are copied verbatim from the base profile (no LLM call). Skill
+selection happens in the planner; the skills writer only regroups them.
+Unified v4 sanitizes recoverable plan/writer mistakes, expands under-selected
+source skills and bullets deterministically, and uses source-backed fallbacks
+before allowing a factual issue to block export.
 
 CCC and the original single-pass tailor are legacy benchmark/rollback engines.
 They are reachable only when `ENABLE_LEGACY_ENGINES=true`.
@@ -81,6 +93,30 @@ All routes under `/api/*` require auth (Better Auth bearer token) except `/healt
 | PUT | `/api/data/sync` | Push user data to Postgres |
 | GET | `/api/data/usage` | Monthly tailor count for the user |
 | POST | `/api/cvs/export` | Render CV to DOCX or PDF |
+| GET | `/api/admin/summary` | Admin-only: platform usage rollup |
+| GET | `/api/admin/users` | Admin-only: account list + per-user tailor counts |
+| GET | `/api/admin/users/:id` | Admin-only: one user's usage + recent runs |
+
+## Admin dashboard
+
+A read-only web dashboard (`apps/admin`, React + Vite) for listing accounts and
+monitoring usage. Served as static files by the API under **`/admin`**
+(`express.static`, so `https://fyxor.eu/admin` in prod). Access is gated by
+`requireAdmin` in `apps/api/src/app.ts`: a valid Better Auth session whose email is
+in the **`ADMIN_EMAILS`** allowlist (comma-separated env var). No role column or DB
+migration — admin status is purely the allowlist. Non-admins get `403`.
+
+Admin DB queries (`listUsers`, `adminUsageSummary`, `userDetail`) live in
+`apps/api/src/db.ts` and join Better Auth's `"user"` table with `usage_events` /
+`tailoring_runs`. Run-detail responses omit the `request`/`result` jsonb so full CV
+contents never reach the dashboard.
+
+Build order is now **shared → api → admin → extension** (`npm run build`). Dev:
+`npm run dev:admin` (Vite on :5174, proxies to the local API at :8787).
+In production the dashboard is at **`https://api-76-13-177-250.sslip.io/admin`** —
+the same sslip.io URL that already has auto-TLS; no new DNS or reverse-proxy needed.
+Deploy: `npm run build` on the VPS, ensure `ADMIN_EMAILS` and `BETTER_AUTH_URL`
+are set in `apps/api/.env`, then restart the API process.
 
 ## Storage (extension)
 

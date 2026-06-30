@@ -88,8 +88,16 @@ Create a summary blueprint with function, industry, seniority, and evidence fit 
 target identity, adjacent identity, transition, transferable, education-led, or executive. Use target identity only when
 the candidate already performs substantially equivalent work. For a functional career change, lead with the proven
 background and explicitly frame the transition.
+Identify the job's headline qualifications and required competencies (including customer-facing and soft competencies such
+as customer service, communication, lead generation, channel/partner management, and target attainment) and make the most
+important ones the summary's focus. Phrase each summary claim objective and the summaryBlueprint.positioningStrategy in the
+job's own terminology so the writer leads with the role's required competencies. A summary claim may be backed by
+transferable or adjacent evidence as well as direct evidence — record the supporting evidence with its real coverage and
+provenance (explicit, supported-equivalent, inferred-baseline, or inferred-context) — but never invent a metric, employer,
+license, seniority, or responsibility to support a claim.
 Mark exact, decisive matches such as a required language, license, certification, or work authorization as mandatory summary
-claims. Select only 2-4 summary claims total, favoring concrete outcomes and discriminating evidence over generic competencies.
+claims. Select only 2-4 summary claims total, prioritizing the job's headline qualifications and concrete supporting outcomes
+over generic competencies the job does not emphasize.
 You may infer a company's broad industry only at high confidence; record it as inference evidence with its basis and never
 infer products, regulated duties, metrics, licenses, seniority, or responsibilities.
 Add requirement IDs to every bullet objective. Preserve broad source coverage:
@@ -104,11 +112,57 @@ plan-approved evidence and skills.
 Summary rules:
 - Follow the summary blueprint and write 35-100 words using 2-4 evidence-backed claims.
 - Every summaryClaims.text value must appear verbatim as a contiguous span inside the summary.
+- Phrase the summary in the job description's vocabulary: mirror the role's required competencies and terminology when they
+  truthfully describe supported or transferable evidence, and lead with the job's headline qualifications the candidate
+  genuinely supports.
 - Include every mandatory claim naturally; do not turn the summary into a keyword list.
 - A target professional identity is allowed only when summaryBlueprint.targetIdentityAllowed is true.
 - For transition or transferable positioning, lead with the proven background and state the intended move without claiming
   prior employment in the target role.
 - Inferred context must retain provenance "inferred-context" and must not be expanded beyond the planned wording.`;
+
+// The summary is written in its own focused call so it gets the full job description
+// and classified requirements and leads with the role's exact language. This is the
+// highest-leverage section for relevance, so its prompt is the most detailed.
+export const summaryWriterPrompt = `${honestyRules}${writingStyle}
+Write ONLY the tailored professional summary and its summaryClaims for the supplied job. Return nothing else — no roles,
+bullets, skills, certifications, or immutable facts.
+Read the supplied job (title and full description) and the classified requirements carefully. Your job is to make this
+candidate read as an obvious fit for THIS role using the job's own words.
+Summary rules:
+- Follow summaryBlueprint and write 35-100 words using 2-4 evidence-backed claims drawn only from the supplied
+  summaryClaims and summaryEvidenceCatalogue.
+- Mirror the job description's exact terminology. When a required competency from the job title, description, or the
+  requirements list truthfully describes the candidate's supported or transferable evidence, use the job's own phrasing for
+  it verbatim (e.g. if the job says "stakeholder management" or "month-end close", use those exact terms, not synonyms).
+- Lead with the job's headline qualifications and most important requirements (priority "must" first) that the candidate
+  genuinely supports. Do not foreground generic competencies the job does not emphasize.
+- Every summaryClaims.text value must appear verbatim as a contiguous span inside the summary.
+- Include every mandatory claim naturally; do not turn the summary into a keyword list or a string of fragments.
+- A target professional identity is allowed only when summaryBlueprint.targetIdentityAllowed is true.
+- For transition or transferable positioning, lead with the proven background and state the intended move without claiming
+  prior employment in the target role.
+- Never invent a metric, employer, license, seniority, or responsibility. Inferred context must retain provenance
+  "inferred-context" and must not be expanded beyond the planned wording.`;
+
+// Bullets are rewritten in their own call, constrained to plan-approved evidence.
+export const experienceWriterPrompt = `${honestyRules}${writingStyle}
+Write ONLY the tailored experience roles for the supplied job: each role's displayTitle and rewritten bullets. Return
+nothing else — no summary, skills, certifications, or immutable facts.
+- Reframe each bullet for the target job, but cite only the plan-approved sourceBulletIndexes and preserve every evidence
+  reference exactly.
+- Use only the displayTitle the plan approved (the original title or its approved reframe); never invent a different title
+  or add seniority not in the plan.
+- Surface metrics that already exist in the cited source bullets; never invent or estimate a number.`;
+
+// Skills selection already happened in the planner. This call only groups the
+// plan-approved skills into themed categories — it may not add, drop, or rename any.
+export const skillsWriterPrompt = `${honestyRules}
+Group the supplied plan-approved skills into a small number (about 3-6) of themed categories in skillCategories — for
+example Languages, Frameworks, Tools, Cloud & DevOps, or Soft Skills — choosing names that fit the skills present and bias
+the names and ordering toward what matters for the target job. Return ONLY skillCategories.
+- Use every supplied skill exactly once and never invent, drop, rename, or merge skills.
+- If there are too few skills to group meaningfully, use a single "Skills" category.`;
 
 export const resumeCriticPrompt = `${honestyRules}
 Act as an independent resume critic. Do not rewrite the resume. Score relevance, credibility, readability, and

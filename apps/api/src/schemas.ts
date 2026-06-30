@@ -58,39 +58,62 @@ export const llmExperienceTitleReviewSchema = z.object({
 
 export const llmEvidencePlanSchema = evidencePlanSchema;
 
-export const llmResumeWriterSchema = z.object({
-  summary: z.string(),
-  summaryClaims: z.array(z.object({
+// Shared writer field shapes — reused by the combined writer schema (used by the
+// repair stage) and by the per-section writer schemas below.
+const writerSummaryClaimsField = z.array(z.object({
+  id: z.string(),
+  text: z.string(),
+  evidence: z.array(summaryEvidenceReferenceSchema),
+  requirementIds: z.array(z.string()).optional(),
+  provenance: z.enum(["explicit", "equivalent", "inferred-context"]).optional()
+}));
+const writerRolesField = z.array(z.object({
+  sourceExperienceId: z.string(),
+  displayTitle: z.string(),
+  bullets: z.array(z.object({
     id: z.string(),
     text: z.string(),
-    evidence: z.array(summaryEvidenceReferenceSchema),
-    requirementIds: z.array(z.string()).optional(),
-    provenance: z.enum(["explicit", "equivalent", "inferred-context"]).optional()
-  })),
-  roles: z.array(z.object({
+    sourceBulletIndexes: z.array(z.number().int().nonnegative())
+  }))
+}));
+const writerSkillCategoriesField = z.array(z.object({
+  name: z.string(),
+  skills: z.array(z.string())
+}));
+const writerSkillEvidenceField = z.array(z.object({
+  skill: z.string(),
+  evidence: z.array(z.object({
     sourceExperienceId: z.string(),
-    displayTitle: z.string(),
-    bullets: z.array(z.object({
-      id: z.string(),
-      text: z.string(),
-      sourceBulletIndexes: z.array(z.number().int().nonnegative())
-    }))
+    sourceBulletIndexes: z.array(z.number().int().nonnegative())
   })),
-  skillCategories: z.array(z.object({
-    name: z.string(),
-    skills: z.array(z.string())
-  })),
-  skillEvidence: z.array(z.object({
-    skill: z.string(),
-    evidence: z.array(z.object({
-      sourceExperienceId: z.string(),
-      sourceBulletIndexes: z.array(z.number().int().nonnegative())
-    })),
-    provenance: z.enum(["explicit", "equivalent", "inferred-baseline"]).default("explicit"),
-    sourceSkills: z.array(z.string()).default([]),
-    requirementIds: z.array(z.string()).default([])
-  })),
+  provenance: z.enum(["explicit", "equivalent", "inferred-baseline"]).default("explicit"),
+  sourceSkills: z.array(z.string()).default([]),
+  requirementIds: z.array(z.string()).default([])
+}));
+
+export const llmResumeWriterSchema = z.object({
+  summary: z.string(),
+  summaryClaims: writerSummaryClaimsField,
+  roles: writerRolesField,
+  skillCategories: writerSkillCategoriesField,
+  skillEvidence: writerSkillEvidenceField,
   certifications: z.array(z.string())
+});
+
+// Per-section writer schemas. The pipeline writes the summary, experience, and
+// skills in three focused calls, then merges them back into a llmResumeWriterSchema
+// shape for sanitization and assembly.
+export const llmSummaryWriterSchema = z.object({
+  summary: z.string(),
+  summaryClaims: writerSummaryClaimsField
+});
+
+export const llmExperienceWriterSchema = z.object({
+  roles: writerRolesField
+});
+
+export const llmSkillsWriterSchema = z.object({
+  skillCategories: writerSkillCategoriesField
 });
 
 export const llmCriticSchema = z.object({

@@ -51,8 +51,18 @@ const critic = { scores: { relevance: 5, credibility: 5, readability: 5, appropr
 
 describe("tailoring runs", () => {
   it("deduplicates active requests and completes asynchronously", async () => {
-    const responses = [plan, writer, critic];
-    const generate = vi.fn(async () => responses.shift()) as unknown as Generator["generate"];
+    // The writer runs as three section calls (resume_summary / resume_experience /
+    // resume_skills); dispatch by call name rather than a fixed sequence.
+    const byName: Record<string, unknown> = {
+      evidence_plan: plan,
+      resume_summary: { summary: writer.summary, summaryClaims: writer.summaryClaims },
+      resume_experience: { roles: writer.roles },
+      resume_skills: { skillCategories: writer.skillCategories },
+      resume_critic: critic,
+      resume_critic_recheck: critic,
+      resume_repair: writer
+    };
+    const generate = vi.fn(async ({ name }: { name: string }) => byName[name]) as unknown as Generator["generate"];
     const factory = () => ({ generate });
     const first = await createTailoringRun({ userId: "run-user", provider: "gemini-api", profile, job, testMode: true, generatorFactory: factory });
     const duplicate = await createTailoringRun({ userId: "run-user", provider: "gemini-api", profile, job, testMode: true, generatorFactory: factory });
@@ -65,7 +75,7 @@ describe("tailoring runs", () => {
     }
     expect(current?.status).toBe("completed");
     expect(current?.cv?.pipeline.runId).toBe(first.id);
-    expect(generate).toHaveBeenCalledTimes(3);
+    expect(generate).toHaveBeenCalledTimes(5);
   });
 
   it("persists cancellation and stops before the next stage", async () => {
