@@ -59,6 +59,12 @@ describe("API routes", () => {
 
     const health = await fetch(`${base}/health`).then((response) => response.json());
     expect(health.configured).toBe(true);
+    expect(health.provider).toBe("deepseek-api");
+
+    const oldProviderHealth = await fetch(`${base}/health`, {
+      headers: { "x-ai-provider": "groq-api" }
+    }).then((response) => response.json());
+    expect(oldProviderHealth.provider).toBe("deepseek-api");
 
     const response = await fetch(`${base}/api/cvs/tailor`, {
       method: "POST",

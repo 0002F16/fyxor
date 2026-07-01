@@ -22,7 +22,7 @@ packages/
 
 - Node 20+
 - Docker (for Postgres)
-- A Gemini API key — [get one at Google AI Studio](https://aistudio.google.com) (free tier works)
+- A DeepSeek API key — create separate dev and production keys in the DeepSeek platform
 
 ### Install & configure
 
@@ -31,8 +31,8 @@ git clone https://github.com/0002F16/fyxor.git
 cd fyxor
 npm install
 
-cp apps/api/.env.example apps/api/.env
-# Edit apps/api/.env — set GEMINI_API_KEY and BETTER_AUTH_SECRET at minimum
+cp .env.example apps/api/.env
+# Edit apps/api/.env — set DEEPSEEK_API_KEY and BETTER_AUTH_SECRET at minimum
 openssl rand -base64 32   # paste output as BETTER_AUTH_SECRET
 ```
 
@@ -69,13 +69,9 @@ npm run dev:extension   # Vite watch build → apps/extension/dist/
 
 | Variable | Default | Notes |
 |---|---|---|
-| `AI_PROVIDER` | `groq-api` | `groq-api` \| `gemini-api` \| `openai-api` \| `codex-local` |
-| `GROQ_API_KEY` | — | Required when using Groq |
-| `GROQ_MODEL` | `meta-llama/llama-4-scout-17b-16e-instruct` | |
-| `GEMINI_API_KEY` | — | Required when using Gemini |
-| `GEMINI_MODEL` | `gemini-2.5-flash` | |
-| `OPENAI_API_KEY` | — | Required when using OpenAI |
-| `OPENAI_MODEL` | `gpt-4o-mini` | |
+| `AI_PROVIDER` | `deepseek-api` | Runtime provider is hard-locked to DeepSeek; older provider names are normalized |
+| `DEEPSEEK_API_KEY` | — | Required for every AI feature |
+| `DEEPSEEK_MODEL` | `deepseek-v4-flash` | Use `deepseek-v4-pro` only if quality testing requires it |
 | `PORT` | `8787` | |
 | `HOST` | `127.0.0.1` | Set `0.0.0.0` behind a reverse proxy on VPS |
 | `DATABASE_URL` | `postgres://postgres:postgres@127.0.0.1:5432/fyxor` | Matches `docker-compose.yml` |
@@ -91,10 +87,10 @@ CCC is the **default tailoring engine** — a Python subprocess that produces hi
 |---|---|
 | `CCC_ENGINE_ROOT` | Absolute path to the CCC repo root |
 | `CCC_PYTHON` | Path to the CCC venv Python (defaults to `$CCC_ENGINE_ROOT/.venv/bin/python3`) |
-| `CCC_LLM_PROVIDER` | LLM provider override inside CCC (defaults to Gemini) |
 | `ENABLE_LEGACY_ENGINES` | Internal rollback/benchmark flag. Default `false`; users always use the unified evidence-first pipeline. |
 
-CCC auto-loads its own `$CCC_ENGINE_ROOT/.env` for its API keys.
+CCC auto-loads its own `$CCC_ENGINE_ROOT/.env`, but this app passes DeepSeek
+credentials explicitly when the legacy CCC path is enabled.
 
 ### Unified tailoring pipeline
 
@@ -133,9 +129,9 @@ All routes under `/api/*` require a **Better Auth bearer token** except where no
 | POST | `/api/cvs/export` | Required | Revalidate evidence and the exact PDF/DOCX before download |
 | POST | `/api/cvs/export` | None | Render CV to DOCX or PDF |
 
-The extension can override the AI provider per-request with the `x-ai-provider` header.
-New and existing extension installs default to Groq; users may explicitly choose
-another configured provider in Advanced settings.
+The API normalizes all `x-ai-provider` values to DeepSeek. New and existing
+extension installs store `deepseek-api`; Advanced settings shows the provider as
+locked.
 
 ---
 
@@ -160,7 +156,7 @@ another configured provider in Advanced settings.
 - Sign-up is required before onboarding or tailoring (email + password only).
 - The extension authenticates with a bearer token stored in `chrome.storage.local` — the reliable pattern for an MV3 extension calling a cross-origin server.
 - On sign-in the extension pulls `profile`/`drafts`/`applications` from `GET /api/data/sync`; local edits are pushed back (debounced, last-write-wins) to `PUT /api/data/sync`.
-- Usage is tracked in `usage_events`. Set `FREE_MONTHLY_TAILORS` to a non-zero value to cap free tailors/month (returns `402` when exceeded). Usage is only meterable for server-side AI providers (`gemini-api`, `openai-api`); `codex-local` runs on the user's machine.
+- Usage is tracked in `usage_events`. Set `FREE_MONTHLY_TAILORS` to a non-zero value to cap free tailors/month (returns `402` when exceeded). All AI usage runs server-side through DeepSeek.
 
 ---
 
@@ -197,5 +193,5 @@ Integration tests (`db.integration.test.ts`) require a live Postgres connection.
 | New schema fields silently missing | Stale `packages/shared/dist` | `npm run build -w @cv-tailor/shared` |
 | User sees sign-in screen, all data gone | Invalid field in stored `auth` object triggers a full reset to empty state | Check Chrome DevTools → Application → Local Storage |
 | Tailoring seems low quality | CCC not configured, fell back to built-in | Check `GET /health` → `ccc.available`; set `CCC_ENGINE_ROOT` |
-| Quota errors | Provider key exhausted or rate-limited | Verify the Groq quota/key or temporarily select another configured provider |
+| Quota errors | DeepSeek key exhausted or rate-limited | Verify `DEEPSEEK_API_KEY`, DeepSeek balance, and provider rate limits |
 | `skillCategories` dropped after tailor | `foldSkillCategories()` not called after LLM response | Ensure it runs after every tailor/regenerate/extract in `apps/api/src/app.ts` |

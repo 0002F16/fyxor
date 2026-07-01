@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-export const aiProviderSchema = z.enum(["codex-local", "openai-api", "gemini-api", "groq-api"]);
+export const aiProviderSchema = z.enum(["deepseek-api", "codex-local", "openai-api", "gemini-api", "groq-api"]);
 export const tailoringEngineSchema = z.enum(["builtin", "ccc"]);
 export const evidenceStatusSchema = z.enum(["verified", "needs-review", "stale", "unsupported", "legacy-unverified"]);
 export const skillProvenanceSchema = z.enum(["explicit", "equivalent", "inferred-baseline"]);
@@ -445,7 +445,7 @@ export const storageStateSchema = z.object({
   auth: authSessionSchema.nullable().default(null),
   settings: z.object({
     apiBaseUrl: z.string().default("https://api-76-13-177-250.sslip.io"),
-    aiProvider: aiProviderSchema.default("groq-api"),
+    aiProvider: aiProviderSchema.default("deepseek-api"),
     providerDefaultMigrated: z.boolean().default(false),
     tailoringEngine: tailoringEngineSchema.default("builtin"),
     onboardingComplete: z.boolean().default(false),
@@ -500,7 +500,7 @@ export const emptyStorageState = (): StorageState => ({
   auth: null,
   settings: {
     apiBaseUrl: "https://api-76-13-177-250.sslip.io",
-    aiProvider: "groq-api",
+    aiProvider: "deepseek-api",
     providerDefaultMigrated: true,
     tailoringEngine: "builtin",
     onboardingComplete: false,
@@ -522,14 +522,10 @@ export function migrateStorage(input: unknown): StorageState {
     : input;
   const parsed = storageStateSchema.safeParse(candidate);
   const state = parsed.success ? parsed.data : emptyStorageState();
-  // Apply the new Groq default once to existing installs. The marker preserves
-  // later explicit provider choices made in Advanced settings.
-  if (!state.settings.providerDefaultMigrated) {
-    if (state.settings.aiProvider === "codex-local" || state.settings.aiProvider === "gemini-api") {
-      state.settings.aiProvider = "groq-api";
-    }
-    state.settings.providerDefaultMigrated = true;
-  }
+  // DeepSeek is now server-locked for every AI feature. Keep older provider
+  // values parseable for compatibility, then normalize them on load.
+  state.settings.aiProvider = "deepseek-api";
+  state.settings.providerDefaultMigrated = true;
   return state;
 }
 

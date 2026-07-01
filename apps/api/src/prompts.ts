@@ -111,11 +111,11 @@ systems, process improvement, quantified outcomes, and stakeholder evidence rele
 // The single source of truth for how a tailored summary must read. Shared by the
 // per-section summary writer (initial tailor) and the combined writer used by the
 // regenerate path, so "Tailor to role" and the section "Regenerate" button stay in
-// lockstep: 3 sentences, 55-68 words, ATS-keyword-first, no template opener.
-export const summaryRules = `Write exactly 3 full sentences totalling 55-68 words that make this candidate read as an obvious, qualified fit. This
+// lockstep: 3 sentences, 40-55 words, ATS-keyword-first, value-led opener.
+export const summaryRules = `Write exactly 3 short sentences totalling 40-55 words that make this candidate read as an obvious, qualified fit. This
 length is a hard requirement: a terse one-liner or a run of short fragments (e.g. "Strong analytical skills. Excellent
-communication skills.") is a failure. Be value-driven — every sentence must carry concrete evidence from the supplied
-profile, never filler.
+communication skills.") is a failure. Lead with value ALWAYS: the opening words must immediately show the candidate's
+role-relevant value, not a bland label or filler.
 
 Do NOT restate the job's generic soft-skill adjectives ("strong analytical skills", "excellent communication skills",
 "proactive attitude", "detail-oriented", "ability to multitask") as if they were the candidate's achievements. Prove those
@@ -129,16 +129,22 @@ ATS — this is the priority:
   not "hiring process", "candidate records", or "MS tools".
 - Front-load the job's most important "must" keywords near the start of the summary.
 - Where the job uses both a spelled-out term and its acronym, include both (e.g. "Applicant Tracking System (ATS)").
-- Plain text only — standard words, no symbols, slashes, emojis, tables, or special characters that break ATS parsing. Use
+- Plain text only and ATS friendly — standard words, no symbols, slashes, emojis, tables, or special characters that break ATS parsing. Use
   the candidate's standard job-title vocabulary, never an invented hybrid title.
 
 Content:
 - Surface the points most relevant to THIS job, choosing from (not limited to): industry-relevant experience and the
   strongest quantified outcomes, decisive credentials (degrees — especially for early-career candidates — certifications,
   licenses), languages, and the tools the job names.
-- Lead with the job's headline "must" requirements the candidate genuinely supports, and open with the candidate's strongest
-  role-relevant identity and value. Never open with a "[current title] transitioning into [job title] opportunities"
-  template, and never lead with an "Intern" or trainee title when a stronger role exists in the profile.
+- Start with the candidate's current source-backed title and years of experience, while leading with value. If the profile
+  shows less than 1 year of experience, or the years are not clearly supported, omit the years rather than guessing.
+- If the job position is not relevant to the candidate's current experience, do not start by claiming the target role as an
+  established identity. Prefer a value-led transition opener such as "[Current title] bringing [transferable strength] to
+  [target role] roles..." or "[Current title] pursuing [target role] opportunities through [source-backed evidence]...".
+  Use "Aspiring [target role]" only when the profile has little direct or adjacent evidence and the framing would otherwise
+  overclaim.
+- Lead with the job's headline "must" requirements the candidate genuinely supports. Never lead with an "Intern" or trainee
+  title when a stronger role exists in the profile.
 - Every summaryClaims.text value must appear verbatim as a contiguous span inside the summary. Include every mandatory claim
   naturally; do not turn the summary into a keyword list or a string of fragments.
 

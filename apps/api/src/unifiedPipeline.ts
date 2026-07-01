@@ -1580,7 +1580,7 @@ function fallbackSummary(
     return `Relevant strengths for the ${job.title} role include ${list}.`;
   };
   let summary = [opener, proofSentence(summaryClaims)].filter(Boolean).join(" ").replace(/\s+/g, " ").trim();
-  // Keep this rare deterministic last-resort fallback in the same 55-80 band the prompt
+  // Keep this rare deterministic last-resort fallback near the summary length band the prompt
   // targets, so a fallback summary doesn't read noticeably shorter than an LLM one.
   if (summary.split(/\s+/).length < 55) {
     summary += ` These verified strengths provide a focused foundation for the core responsibilities and working context of the ${job.title} position.`;

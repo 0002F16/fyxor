@@ -36,31 +36,19 @@ Default DB: `postgres://postgres:postgres@127.0.0.1:5432/fyxor` (matches docker-
 ## AI / LLM providers
 
 Configured via `apps/api/.env`:
-- `AI_PROVIDER` — `groq-api` (current default) | `gemini-api` | `openai-api` | `codex-local`
-- `GROQ_API_KEY` / `GROQ_MODEL` (default: `llama-3.3-70b-versatile`)
-- `GEMINI_API_KEY` / `GEMINI_MODEL` (default: `gemini-2.5-flash`)
-- `OPENAI_API_KEY` / `OPENAI_MODEL` (default: `gpt-4o-mini`)
+- `AI_PROVIDER` — `deepseek-api` (runtime is hard-locked; old names normalize to DeepSeek)
+- `DEEPSEEK_API_KEY` / `DEEPSEEK_MODEL` (default: `deepseek-v4-flash`)
 
-The extension can override per-request via the `x-ai-provider` header.
+The extension may still send `x-ai-provider`, but the API normalizes every value
+to DeepSeek.
 
 **Tailoring quality is gated by the model, not just the prompts.** A tailoring
 run makes 5 sequential LLM calls (~27K tokens total, largest single call —the
 critic— ~8.5K tokens). `apps/api/src/prompts.ts` already encodes fairly strict
 constraints (JD-verbatim keywords, exact summary length, no invented facts,
-no generic soft-skill filler); a small/weak model will silently ignore them —
-e.g. `llama-4-scout-17b` mis-tailored a KYC/AML compliance resume as a generic
-Data Analyst and invented skills (SQL, Statistical Analysis) that weren't in
-the source profile. If a tailored CV reads generic or off-target, check
-`GROQ_MODEL` (or whichever provider is active) before assuming the prompt is
-wrong.
-
-**Groq free-tier TPM caps the usable model.** The 8.5K-token critic call must
-fit in one minute's budget. `llama-3.3-70b-versatile` (12K TPM) is the
-strongest free-tier Groq model that still fits it; `gpt-oss-120b` (8K TPM)
-cannot fit the critic call at all. Free tier ≈ 3-4 full tailoring runs/day
-(100K TPD). `apps/api/src/groq.ts` retries 429s with exponential backoff
-(honoring `Retry-After`) so a run survives hitting the per-minute cap
-mid-run — a run can take 60-120s on the free tier as a result.
+no generic soft-skill filler); a small/weak model will silently ignore them. If
+a tailored CV reads generic or off-target, check `DEEPSEEK_MODEL` and the
+DeepSeek dashboard before assuming the prompt is wrong.
 
 ## Tailoring pipeline
 
@@ -89,7 +77,7 @@ They are reachable only when `ENABLE_LEGACY_ENGINES=true`.
 
 - `CCC_ENGINE_ROOT` — path to the CCC repo root
 - `CCC_PYTHON` — path to the CCC venv python (defaults to `$CCC_ENGINE_ROOT/.venv/bin/python3`)
-- `CCC_LLM_PROVIDER` — override the LLM inside CCC (defaults to Gemini)
+- Legacy CCC runs are passed DeepSeek via its OpenAI-compatible mode.
 - CCC auto-loads its own `.env` from `$CCC_ENGINE_ROOT/.env`
 - Production tailoring never silently falls back to CCC or the old single-pass engine.
 
@@ -210,6 +198,6 @@ Appropriateness signals. Hard factual failures and stale evidence block export.
 - **Stale shared dist**: always rebuild `@cv-tailor/shared` after changing schemas before testing the API or extension
 - **Auth reset**: any invalid field in the `auth` object inside stored state triggers a full reset to `emptyStorageState()` — the user sees the sign-in screen and all local-only data is gone
 - **CCC not configured**: API won't 503 — it falls back to built-in. Check `/health` if tailoring seems weaker than expected
-- **OpenAI quota**: OpenAI quota was exhausted during development; avoid `openai-api` unless quota is confirmed available
-- **Groq free-tier rate limits**: default provider is Groq; free-tier TPM (12K/min for `llama-3.3-70b-versatile`) is smaller than a full run's token load, so 429s during a run are normal and handled by backoff in `apps/api/src/groq.ts` — don't mistake a slow (60-120s) run for a hang
+- **DeepSeek key/balance**: all AI features require `DEEPSEEK_API_KEY`; if `/health` reports unconfigured, set the key in local `apps/api/.env` or the VPS env file
+- **DeepSeek retries**: `apps/api/src/deepseek.ts` retries 429/5xx responses with backoff, so a temporarily slow run is not necessarily hung
 - **Export without auth**: `/api/cvs/export` is intentionally unauthenticated (used for preview renders)

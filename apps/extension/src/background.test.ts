@@ -83,7 +83,7 @@ describe("background tailoring start", () => {
     await vi.waitFor(() => expect(mocks.tailor).toHaveBeenCalledTimes(1));
     expect(mocks.tailor).toHaveBeenCalledWith(
       "http://127.0.0.1:8787",
-      "gemini-api",
+      "deepseek-api",
       { id: "profile-1" },
       { title: "Engineer", company: "Acme", url: "https://jobs.example/1" },
       "ccc",

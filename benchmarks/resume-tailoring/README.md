@@ -33,6 +33,7 @@ rendering, and manifest generation with:
 npm run benchmark:resume
 ```
 
-Use `BENCHMARK_PROVIDER=gemini-api` to select another configured provider, or
-`BENCHMARK_CASES=synthetic-turkish-language-04,synthetic-authorization-11` to run
+The benchmark defaults to DeepSeek. Old provider names are accepted only as
+compatibility inputs and are normalized to DeepSeek by the API provider layer.
+Use `BENCHMARK_CASES=synthetic-turkish-language-04,synthetic-authorization-11` to run
 a focused subset.

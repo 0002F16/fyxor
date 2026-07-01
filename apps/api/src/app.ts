@@ -41,6 +41,7 @@ import { cccStatus, isCccAvailable, runCccEngine } from "./cccEngine.js";
 import { reviewExperienceTitles } from "./titleReview.js";
 import { generateUnifiedCv, PIPELINE_VERSION, regenerateUnifiedSection } from "./unifiedPipeline.js";
 import { cancelTailoringRun, createTailoringRun, getTailoringRun } from "./tailoringRuns.js";
+import { evaluateTailoredCv } from "./resumeEval.js";
 
 const asyncRoute = (fn: express.RequestHandler): express.RequestHandler =>
   (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
@@ -404,6 +405,13 @@ export function createApp(generatorFactory?: () => Generator) {
 
   app.post("/api/cvs/export", requireAuth, asyncRoute(async (req, res) => {
     const { profile, cv } = exportRequestSchema.parse(req.body);
+    const evaluation = evaluateTailoredCv(profile, cv.job, cv);
+    if (evaluation.hardFailures.length || cv.readiness === "blocked") {
+      return res.status(409).json({
+        error: "Export blocked while factual evidence issues remain.",
+        findings: evaluation.hardFailures
+      });
+    }
     const format = req.query.format === "pdf" ? "pdf" : "docx";
     const pdfResult = format === "pdf" ? await makePdfWithAudit(cv) : undefined;
     const buffer = pdfResult ? pdfResult.buffer : await makeDocx(cv);

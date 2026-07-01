@@ -203,7 +203,10 @@ describe("unified evidence-first pipeline", () => {
 
     // The regenerate summary call carries the same shared spec as a fresh tailor.
     expect(summaryInstruction).toContain("3 short sentences");
-    expect(summaryInstruction).toContain("55-68");
+    expect(summaryInstruction).toContain("40-55");
+    expect(summaryInstruction).toContain("[Current title] bringing [transferable strength]");
+    expect(summaryInstruction).toContain("Use \"Aspiring [target role]\" only");
+    expect(summaryInstruction).toContain("Lead with value ALWAYS");
     if (patch.section !== "summary") throw new Error("expected a summary patch");
     expect(patch.summary).toBe(briefSummary);
     expect(patch.summary).not.toMatch(/transitioning into/i);

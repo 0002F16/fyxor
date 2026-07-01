@@ -10,7 +10,7 @@ dotenv.config({ path: resolve("apps/api/.env") });
 
 const execFileAsync = promisify(execFile);
 const outputDir = resolve(process.env.BENCHMARK_OUTPUT_DIR || "output/pdf/resume-tailoring-eval/synthetic");
-const provider = (process.env.BENCHMARK_PROVIDER || "groq-api") as "groq-api" | "gemini-api" | "openai-api" | "codex-local";
+const provider = (process.env.BENCHMARK_PROVIDER || "deepseek-api") as "deepseek-api" | "groq-api" | "gemini-api" | "openai-api" | "codex-local";
 const selectedIds = new Set((process.env.BENCHMARK_CASES || "").split(",").map((entry) => entry.trim()).filter(Boolean));
 const cases = selectedIds.size ? syntheticCases.filter((entry) => selectedIds.has(entry.id)) : syntheticCases;
 const append = process.env.BENCHMARK_APPEND === "1";

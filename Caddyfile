@@ -1,0 +1,16 @@
+# The production API already runs at https://api-76-13-177-250.sslip.io with
+# auto-TLS courtesy of sslip.io — no reverse-proxy config is needed for the
+# admin dashboard. The admin SPA is served by the same Express process under
+# /admin, so the dashboard is reachable at:
+#
+#   https://api-76-13-177-250.sslip.io/admin
+#
+# To deploy:
+#   1. SSH into root@76.13.177.250
+#   2. npm run build   (builds shared → api → admin → extension)
+#   3. Set ADMIN_EMAILS in apps/api/.env (and BETTER_AUTH_URL if not set)
+#   4. Restart the API process — the admin SPA is served automatically.
+#
+# If you later want a custom domain (e.g. fyxor.eu), add a Caddy site block
+# that reverse_proxies to 127.0.0.1:8787, then add the domain to
+# BETTER_AUTH_URL and apps/api/src/auth.ts trustedOrigins.

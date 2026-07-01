@@ -92,22 +92,22 @@ describe("storage migration", () => {
     const { aiProvider: _aiProvider, ...oldSettings } = state.settings;
     const previous = { ...state, settings: oldSettings };
     expect(migrateStorage(previous).pendingJob).toBeNull();
-    expect(migrateStorage(previous).settings.aiProvider).toBe("groq-api");
+    expect(migrateStorage(previous).settings.aiProvider).toBe("deepseek-api");
     expect(migrateStorage(previous).settings.apiBaseUrl).toBe(previous.settings.apiBaseUrl);
   });
 
-  it("moves installations using the former Gemini default to Groq", () => {
+  it("moves installations using older provider defaults to DeepSeek", () => {
     const state = emptyStorageState();
     const previous = { ...state, settings: { ...state.settings, aiProvider: "gemini-api", providerDefaultMigrated: false } };
     const migrated = migrateStorage(previous);
-    expect(migrated.settings.aiProvider).toBe("groq-api");
+    expect(migrated.settings.aiProvider).toBe("deepseek-api");
     expect(migrated.settings.providerDefaultMigrated).toBe(true);
   });
 
-  it("preserves an explicit provider choice after the Groq-default migration", () => {
+  it("replaces explicit older provider choices with DeepSeek", () => {
     const state = emptyStorageState();
     const explicit = { ...state, settings: { ...state.settings, aiProvider: "gemini-api", providerDefaultMigrated: true } };
-    expect(migrateStorage(explicit).settings.aiProvider).toBe("gemini-api");
+    expect(migrateStorage(explicit).settings.aiProvider).toBe("deepseek-api");
   });
 
   it("migrates version-one tailored bullets without fabricating citations", () => {

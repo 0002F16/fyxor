@@ -11,6 +11,8 @@ interface TailorPayload {
   tailoringEngine: TailoringEngine;
 }
 
+const DEEPSEEK_PROVIDER: AiProvider = "deepseek-api";
+
 // MV3 reclaims idle service workers after ~30s; a lone in-flight fetch doesn't
 // reliably keep the worker alive, so a long CCC run gets killed mid-request.
 // Pinging a no-permission extension API every 20s (under the idle window) resets
@@ -40,7 +42,7 @@ async function reconcileOrphanedTailoring() {
     startKeepAlive();
     void monitorExistingRun(
       state.settings.apiBaseUrl,
-      state.settings.aiProvider,
+      DEEPSEEK_PROVIDER,
       state.tailoringJob.runId,
       state.tailoringJob.jobKey,
       startedAt,
@@ -121,7 +123,7 @@ async function runTailoring(payload: TailorPayload, jobKey: string, startedAt: n
     await setTailoringJob({ status: "running", error: "", cvId: "", runId: "", stage: "queued", progress: 0, jobKey, startedAt });
     const cv = await api.tailor(
       payload.apiBaseUrl,
-      payload.aiProvider,
+      DEEPSEEK_PROVIDER,
       payload.profile,
       payload.job,
       payload.tailoringEngine,

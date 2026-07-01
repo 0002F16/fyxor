@@ -255,31 +255,12 @@ export async function runCccEngine(profile: BaseProfile, job: JobDescription): P
     const cccEnv = loadCccDotEnv();
     const mergedEnv = { ...cccEnv, ...process.env } as Record<string, string>;
 
-    const cccProvider = process.env.CCC_LLM_PROVIDER || "gemini";
-    const geminiKey = mergedEnv.GEMINI_API_KEY || "";
-
-    let providerArgs: string[];
-    if (cccProvider === "groq") {
-      providerArgs = [
-        "--llm-provider", "openai",
-        "--openai-api-key", mergedEnv.GROQ_API_KEY || "",
-        "--openai-model", mergedEnv.GROQ_MODEL || "meta-llama/llama-4-scout-17b-16e-instruct",
-        "--openai-base-url", "https://api.groq.com/openai/v1",
-      ];
-    } else if (cccProvider === "openai") {
-      providerArgs = [
-        "--llm-provider", "openai",
-        "--openai-model", mergedEnv.OPENAI_MODEL || "gpt-4.1-mini",
-        "--openai-api-key", mergedEnv.OPENAI_API_KEY || "",
-      ];
-    } else {
-      // Default: Gemini
-      providerArgs = [
-        "--llm-provider", "gemini",
-        "--gemini-model", mergedEnv.GEMINI_MODEL || "gemini-2.5-flash",
-        "--gemini-api-key", geminiKey,
-      ];
-    }
+    const providerArgs = [
+      "--llm-provider", "openai",
+      "--openai-api-key", mergedEnv.DEEPSEEK_API_KEY || "",
+      "--openai-model", mergedEnv.DEEPSEEK_MODEL || "deepseek-v4-flash",
+      "--openai-base-url", "https://api.deepseek.com",
+    ];
 
     const args = [
       ENGINE_SCRIPT,
@@ -291,7 +272,7 @@ export async function runCccEngine(profile: BaseProfile, job: JobDescription): P
     ];
 
     const startedAt = Date.now();
-    console.log(`[ccc] start provider=${cccProvider} model=${mergedEnv.GROQ_MODEL || mergedEnv.GEMINI_MODEL || "?"}`);
+    console.log(`[ccc] start provider=deepseek model=${mergedEnv.DEEPSEEK_MODEL || "deepseek-v4-flash"}`);
     let stdout = "";
     try {
       ({ stdout } = await execFileAsync(PYTHON, args, {

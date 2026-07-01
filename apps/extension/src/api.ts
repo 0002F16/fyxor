@@ -8,12 +8,13 @@ export class AuthExpiredError extends ApiError {}
 // Default request timeout. Tailoring is much slower (CCC's multi-step pipeline can
 // run several minutes), so callers below override it with TAILOR_TIMEOUT_MS.
 const DEFAULT_TIMEOUT_MS = 30_000;
-// 15 min — comfortably covers a CCC + Groq multi-step run while staying under CCC's
+// 15 min — comfortably covers a CCC + DeepSeek multi-step run while staying under CCC's
 // 20-min server cap (cccEngine RUN_TIMEOUT_MS). The orphan watchdogs (background
 // STALE_TAILORING_MS / popup STALE_MS) must stay greater than this.
 const TAILOR_TIMEOUT_MS = 900_000;
 
 async function request<T>(baseUrl: string, provider: AiProvider, path: string, init?: RequestInit, timeoutMs = DEFAULT_TIMEOUT_MS, externalSignal?: AbortSignal): Promise<T> {
+  void provider;
   const token = await getAuthToken();
   // Abort the fetch if the server never responds, so a hung request surfaces a
   // clear error instead of spinning forever. When the caller also passes a
@@ -28,7 +29,7 @@ async function request<T>(baseUrl: string, provider: AiProvider, path: string, i
       signal,
       headers: {
         "Content-Type": "application/json",
-        "x-ai-provider": provider,
+        "x-ai-provider": "deepseek-api",
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
         ...init?.headers
       }
@@ -106,6 +107,7 @@ export const api = {
   usage: (base: string, provider: AiProvider) =>
     request<{ total: number; byAction: Record<string, number> }>(base, provider, "/api/data/usage"),
   export: async (base: string, provider: AiProvider, profile: BaseProfile, cv: TailoredCv, format: "pdf" | "docx") => {
+    void provider;
     // Mirror request()'s timeout so a hung export surfaces a clear error instead
     // of spinning "Creating PDF…" forever. (Export returns a binary blob, not
     // JSON, so it can't reuse request() directly.)
@@ -115,7 +117,7 @@ export const api = {
     try {
       const token = await getAuthToken();
       response = await fetch(`${base}/api/cvs/export?format=${format}`, {
-        method: "POST", headers: { "Content-Type": "application/json", "x-ai-provider": provider, ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify({ profile, cv }), signal: controller.signal
+        method: "POST", headers: { "Content-Type": "application/json", "x-ai-provider": "deepseek-api", ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify({ profile, cv }), signal: controller.signal
       });
     } catch (cause) {
       if ((cause as Error)?.name === "AbortError") throw new ApiError("Export timed out — the server took too long to respond. Please try again.");
