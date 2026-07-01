@@ -88,10 +88,14 @@ Create a summary blueprint with function, industry, seniority, and evidence fit 
 target identity, adjacent identity, transition, transferable, education-led, or executive. Use target identity only when
 the candidate already performs substantially equivalent work. For a functional career change, lead with the proven
 background and explicitly frame the transition.
-Identify the job's headline qualifications and required competencies (including customer-facing and soft competencies such
-as customer service, communication, lead generation, channel/partner management, and target attainment) and make the most
-important ones the summary's focus. Phrase each summary claim objective and the summaryBlueprint.positioningStrategy in the
-job's own terminology so the writer leads with the role's required competencies. A summary claim may be backed by
+Identify the job's headline qualifications and required competencies and make the most important ones the summary's focus.
+Prioritize the role's core FUNCTIONAL responsibilities and named domain methods, processes, and terminology (what the role
+actually does day to day — e.g. Know Your Customer (KYC), Customer Due Diligence (CDD), sanctions and PEP screening,
+adverse-news research, reconciliation, controls, audit) over generic soft-skill adjectives (e.g. "strong analytical skills",
+"excellent communication", "proactive", "detail-oriented", "ability to multitask"). Never make a generic soft-skill trait a
+summary claim's focus when the job also names concrete domain work the candidate's evidence supports; soft skills may only
+ride along, proven by real experience, never stand in for the domain. Phrase each summary claim objective and the
+summaryBlueprint.positioningStrategy in the job's own terminology so the writer leads with the role's required competencies. A summary claim may be backed by
 transferable or adjacent evidence as well as direct evidence — record the supporting evidence with its real coverage and
 provenance (explicit, supported-equivalent, inferred-baseline, or inferred-context) — but never invent a metric, employer,
 license, seniority, or responsibility to support a claim.
@@ -108,8 +112,15 @@ systems, process improvement, quantified outcomes, and stakeholder evidence rele
 // per-section summary writer (initial tailor) and the combined writer used by the
 // regenerate path, so "Tailor to role" and the section "Regenerate" button stay in
 // lockstep: 3 sentences, 55-68 words, ATS-keyword-first, no template opener.
-export const summaryRules = `Write exactly 3 short sentences (55-68 words total) that make this candidate read as an obvious, qualified fit. Be brief and
-value-driven — every sentence must carry concrete evidence from the supplied profile, never filler.
+export const summaryRules = `Write exactly 3 full sentences totalling 55-68 words that make this candidate read as an obvious, qualified fit. This
+length is a hard requirement: a terse one-liner or a run of short fragments (e.g. "Strong analytical skills. Excellent
+communication skills.") is a failure. Be value-driven — every sentence must carry concrete evidence from the supplied
+profile, never filler.
+
+Do NOT restate the job's generic soft-skill adjectives ("strong analytical skills", "excellent communication skills",
+"proactive attitude", "detail-oriented", "ability to multitask") as if they were the candidate's achievements. Prove those
+qualities implicitly through the candidate's real domain experience, and spend the words on the role's actual work and
+terminology instead.
 
 ATS — this is the priority:
 - Pull the job description's exact keywords into the summary verbatim — hard skills, tools/systems, certifications, and the
