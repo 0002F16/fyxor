@@ -512,7 +512,10 @@ function Onboarding({ state, onChange, initialMode = "upload", initialView }: { 
 
   async function finish() {
     const next = { ...state, profile: { ...profile, rawText, updatedAt: new Date().toISOString() }, settings: { ...state.settings, onboardingComplete: true, onboardingStep: "" } };
-    await setState(next); onChange(next); location.hash = "#pin";
+    await setState(next); onChange(next);
+    // Pin coach is a first-run affordance — a returning user who redoes setup
+    // has already seen it, so drop them straight home instead of re-nagging.
+    location.hash = state.settings.pinScreenSeen ? "#home" : "#pin";
   }
 
   const BASIC_FIELDS = [
@@ -1815,7 +1818,7 @@ function Tracker({ state, onChange }: { state: StorageState; onChange: (s: Stora
 
 function Account({ state, onChange }: { state: StorageState; onChange: (s: StorageState) => void }) {
   const [apiBaseUrl, setApiBaseUrl] = useState(state.settings.apiBaseUrl);
-  const [aiProvider, setAiProvider] = useState(state.settings.aiProvider);
+  const aiProvider: AiProvider = "deepseek-api";
   const [health, setHealth] = useState("");
   const [signingOut, setSigningOut] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
@@ -1842,11 +1845,11 @@ function Account({ state, onChange }: { state: StorageState; onChange: (s: Stora
     } finally { setDeleting(false); }
   }
   async function save() {
-    const next = { ...state, settings: { ...state.settings, apiBaseUrl, aiProvider, tailoringEngine: "builtin" as const } }; await setState(next); onChange(next); setHealth("Settings saved. New AI requests will use the selected provider.");
+    const next = { ...state, settings: { ...state.settings, apiBaseUrl, aiProvider, tailoringEngine: "builtin" as const } }; await setState(next); onChange(next); setHealth("Settings saved. New AI requests will use DeepSeek.");
   }
   async function check() {
     setHealth("Checking…");
-    try { const result = await api.health(apiBaseUrl, aiProvider); setHealth(result.configured ? `Connected · ${result.provider} · ${result.model} · unified evidence pipeline` : "Local server connected, but the selected provider is not configured."); }
+    try { const result = await api.health(apiBaseUrl, aiProvider); setHealth(result.configured ? `Connected · ${result.provider} · ${result.model} · unified evidence pipeline` : "Local server connected, but DeepSeek is not configured."); }
     catch (e) { if (!(await handleAuthExpiry(e, onChange))) setHealth((e as Error).message); }
   }
   return <Shell title="Account">
@@ -1872,17 +1875,15 @@ function Account({ state, onChange }: { state: StorageState; onChange: (s: Stora
 
       <details className="card group [&_summary]:list-none">
         <summary className="flex cursor-pointer items-center justify-between">
-          <div><h2 className="section-title">Advanced settings</h2><p className="mt-1 text-sm text-muted">AI provider and the local server URL.</p></div>
+          <div><h2 className="section-title">Advanced settings</h2><p className="mt-1 text-sm text-muted">DeepSeek and the local server URL.</p></div>
           <ChevronDown size={18} className="text-muted transition-transform group-open:rotate-180" />
         </summary>
         <div className="mt-4 border-t border-line pt-4">
-          <label className="block"><span className="label">Provider</span>
-            <select className="field" value={aiProvider} onChange={(e) => setAiProvider(e.target.value as AiProvider)}><option value="groq-api">Groq API (recommended)</option><option value="gemini-api">Gemini API</option><option value="openai-api">OpenAI API</option><option value="codex-local">Codex running on this machine</option></select>
-          </label>
+          <label className="block"><span className="label">Provider</span><input className="field" value="DeepSeek API" readOnly /></label>
           <label className="mt-4 block"><span className="label">Local server URL</span><input className="field" value={apiBaseUrl} onChange={(e) => setApiBaseUrl(e.target.value)} /></label>
           <div className="mt-4 flex gap-2">
             <button className="btn-primary" onClick={save}><Save size={16} /> Save</button>
-            <button className="btn-secondary" onClick={check}>Test selected provider</button>
+            <button className="btn-secondary" onClick={check}>Test DeepSeek</button>
           </div>
           {health && <p className="mt-3 text-sm text-muted">{health}</p>}
         </div>
@@ -2109,7 +2110,13 @@ function Auth({ state, onChange }: { state: StorageState; onChange: (s: StorageS
         }
       } catch { /* empty/offline — proceed with the local state */ }
       onChange(next);
-      location.hash = next.profile ? "#home" : "#welcome";
+      // No profile yet → first-run Welcome. A profile that's still mid-setup
+      // (saved onboardingStep, not yet complete) resumes onboarding directly
+      // instead of bouncing through #home and its "Resuming your setup…" guard.
+      if (!next.profile) location.hash = "#welcome";
+      else if (!next.settings.onboardingComplete && next.settings.onboardingStep)
+        location.hash = `#onboarding/${next.profile.rawText ? "upload" : "manual"}`;
+      else location.hash = "#home";
     } catch (err) {
       setError((err as Error).message);
     } finally { setBusy(false); }
@@ -2184,8 +2191,16 @@ export function App() {
   if (!state) return <div className="p-6"><Loading label="Loading Fyxor…" /></div>;
   // Hard gate: no access to any screen until an account exists on this device.
   if (!state.auth) return <Auth state={state} onChange={setAppState} />;
-  if (hash === "#welcome") return <Welcome state={state} onChange={setAppState} />;
-  if (hash === "#pin") return <PinScreen state={state} onChange={setAppState} />;
+  // Welcome and Pin are one-time coaches: once seen, direct nav (or a redo of
+  // setup) should fall through to the app rather than re-showing them.
+  if (hash === "#welcome") {
+    if (state.settings.welcomeSeen) { location.hash = "#home"; return <div className="p-6"><Loading label="Loading Fyxor…" /></div>; }
+    return <Welcome state={state} onChange={setAppState} />;
+  }
+  if (hash === "#pin") {
+    if (state.settings.pinScreenSeen) { location.hash = "#home"; return <div className="p-6"><Loading label="Loading Fyxor…" /></div>; }
+    return <PinScreen state={state} onChange={setAppState} />;
+  }
   // Resume an interrupted setup: an unfinished profile with a saved onboarding step
   // pulls the user back in rather than dropping them on a half-built home screen.
   if (state.profile && !state.settings.onboardingComplete && state.settings.onboardingStep && !hash.startsWith("#onboarding")) {
