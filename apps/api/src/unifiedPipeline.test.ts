@@ -209,6 +209,31 @@ describe("unified evidence-first pipeline", () => {
     expect(patch.summary).not.toMatch(/transitioning into/i);
   });
 
+  it("keeps the LLM summary and re-derives claims when the LLM's own claims don't match the plan", async () => {
+    // Mimics the career-change failure: the LLM writes good prose but returns a claim id
+    // the plan doesn't contain, so every LLM claim is dropped. The prose must survive
+    // (claims re-derived from the plan), NOT be replaced by the deterministic template.
+    const changeSummary = "Backend Engineer bringing proven TypeScript API delivery to reliable production services. Built and shipped APIs used by 12 internal teams while automating continuous integration pipelines. Focused on dependable backend systems that scale with team needs.";
+    const unmatchedClaimWriter = {
+      ...writer,
+      summary: changeSummary,
+      summaryClaims: [{
+        id: "llm-invented-id",
+        text: "proven TypeScript API delivery",
+        evidence: [{ sourceExperienceId: "source-1", sourceBulletIndexes: [0] }]
+      }]
+    };
+    const generate = dispatchGenerator({ writer: unmatchedClaimWriter });
+    const cv = await generateUnifiedCv({ generator: { generate }, profile, job, runId: "run-change" });
+
+    expect(cv.summary).toBe(changeSummary);
+    expect(cv.summary).not.toMatch(/transitioning into|Relevant strengths for/i);
+    expect(cv.summaryClaims.length).toBeGreaterThan(0);
+    expect(cv.pipeline.recoveries).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "source-summary-restored" })
+    ]));
+  });
+
   it("uses a conservative plan when the planner returns no usable source roles", async () => {
     const invalid = { ...plan, roles: [{ ...plan.roles[0], sourceExperienceId: "missing" }] };
     const safeWriter = {
@@ -516,10 +541,11 @@ describe("unified evidence-first pipeline", () => {
     expect(sanitizeEvidencePlan(plan, profile, job).plan.pageTarget).toBe("one");
   });
 
-  it("removes inferred baseline wording from summary and bullets while retaining it in skills", async () => {
+  it("strips a leaked inferred-baseline sentence but keeps the rest of the LLM summary", async () => {
     // The JD deliberately does NOT name "communication": an inferred-baseline skill
     // the job does not mention must not leak into the summary or bullets (it may only
-    // appear in the skills section). When the JD does name it, keeping it is intended.
+    // appear in the skills section). Only the offending sentence is removed — the rest
+    // of the LLM prose survives verbatim rather than being replaced by the template.
     const communicationJob = { ...job };
     const inferredPlan = {
       ...plan,
@@ -548,7 +574,7 @@ describe("unified evidence-first pipeline", () => {
     };
     const leakingWriter = {
       ...writer,
-      summary: "Software developer with strong Communication and TypeScript experience.",
+      summary: "Backend developer with hands-on TypeScript API delivery experience across production services. Skilled in strong Communication with cross-functional teams. Ships reliable APIs used by 12 internal teams every day.",
       roles: [{
         ...writer.roles[0]!,
         bullets: [{
@@ -564,6 +590,12 @@ describe("unified evidence-first pipeline", () => {
 
     expect(cv.skills).toContain("Communication");
     expect(cv.summary).not.toContain("Communication");
+    // The non-leaking sentences survive verbatim — the summary is NOT replaced by the template.
+    expect(cv.summary).toContain("TypeScript API delivery experience");
+    expect(cv.summary).not.toMatch(/transitioning into|Relevant strengths for/i);
+    expect(cv.pipeline.recoveries).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "source-summary-restored" })
+    ]));
     expect(cv.experiences[0]?.bullets.some((bullet) => bullet.text.includes("Communication"))).toBe(false);
     expect(cv.readiness).toBe("ready");
   });
@@ -587,7 +619,11 @@ describe("unified evidence-first pipeline", () => {
     expect(result.plan.summaryBlueprint?.decisiveRequirementIds).toContain(requirement!.id);
   });
 
-  it("rejects a reused generic summary when the target blueprint requires different positioning", () => {
+  it("does not hard-flag summary-claim mismatches — the summary is trusted LLM prose", () => {
+    // Summary bookkeeping (reused base summary, unplanned/mismatched claims, positioning)
+    // must NOT surface as validateWriterOutput findings, since every finding is a hard
+    // failure that would nuke the LLM summary into the deterministic template. Its factual
+    // integrity is enforced by stripping in sanitizeWriterOutput instead.
     const result = sanitizeEvidencePlan({
       ...plan,
       fit: "adjacent",
@@ -608,12 +644,10 @@ describe("unified evidence-first pipeline", () => {
     const findings = validateWriterOutput({
       ...writer,
       summary: profile.summary,
-      summaryClaims: [{
-        ...writer.summaryClaims[0]!,
-        text: profile.summary
-      }]
+      summaryClaims: [{ id: "llm-invented-id", text: profile.summary, evidence: [] }]
     }, result.plan, profile, { ...job, title: "KYC Analyst" });
-    expect(findings).toContain("Writer reused the generic base summary despite job-specific summary evidence");
+    expect(findings).not.toContain("Writer reused the generic base summary despite job-specific summary evidence");
+    expect(findings.some((finding) => /summary claim/i.test(finding))).toBe(false);
   });
 
   it("splits a compound base-skill blob and fills out a thin accounting profile", () => {

@@ -1428,20 +1428,6 @@ export function validateEvidencePlan(plan: EvidencePlan, profile: BaseProfile): 
   return findings;
 }
 
-function summaryAlreadyFitsBlueprint(profile: BaseProfile, job: JobDescription, plan: EvidencePlan): boolean {
-  const base = normalized(profile.summary);
-  if (!base) return false;
-  const mandatoryCovered = plan.summaryClaims
-    .filter((claim) => claim.mandatory)
-    .every((claim) => claim.evidence.some((reference) => {
-      const evidence = normalized(summaryEvidenceText(reference, profile));
-      return evidence && (base.includes(evidence) || textMatchScore(evidence, base) >= 4);
-    }));
-  const titleAligned = textMatchScore(job.title, profile.summary) >= 3 ||
-    plan.summaryBlueprint?.positioningMode === "transferable";
-  return mandatoryCovered && titleAligned;
-}
-
 export function validateWriterOutput(
   output: WriterOutput,
   plan: EvidencePlan,
@@ -1452,44 +1438,12 @@ export function validateWriterOutput(
   const rolePlans = new Map(plan.roles.map((role) => [role.sourceExperienceId, role]));
   const approvedSkills = new Set(plan.skills.map((skill) => normalized(skill.skill)));
   const approvedCertifications = new Set(plan.certifications.map(normalized));
-  const summaryPlans = new Map(plan.summaryClaims.map((claim) => [claim.id, claim]));
-  const outputClaimIds = new Set(output.summaryClaims.map((claim) => claim.id));
-  for (const claim of plan.summaryClaims.filter((entry) => entry.mandatory)) {
-    if (!outputClaimIds.has(claim.id)) findings.push(`Writer omitted planned summary claim ${claim.id}`);
-  }
-
-  for (const claim of output.summaryClaims) {
-    const planned = summaryPlans.get(claim.id);
-    if (!planned) {
-      findings.push(`Writer added unplanned summary claim ${claim.id}`);
-      continue;
-    }
-    if (claim.evidence.some((reference) =>
-      !planned.evidence.some((allowed) => summaryEvidenceAllowed(reference, allowed))
-    )) {
-      findings.push(`Summary claim ${claim.id} cites unplanned evidence`);
-    }
-    if (!normalized(output.summary).includes(normalized(claim.text))) {
-      findings.push(`Summary claim ${claim.id} text does not appear in the summary`);
-    }
-    if ((claim.provenance || "explicit") !== (planned.provenance || "explicit")) {
-      findings.push(`Summary claim ${claim.id} changed provenance`);
-    }
-  }
-  for (const claim of plan.summaryClaims.filter((entry) => entry.mandatory)) {
-    if (!output.summaryClaims.some((entry) => entry.id === claim.id)) {
-      findings.push(`Writer omitted mandatory summary claim ${claim.id}`);
-    }
-  }
-  if (!plan.summaryBlueprint?.targetIdentityAllowed &&
-    normalized(output.summary).startsWith(normalized(job?.title || "")) &&
-    normalized(job?.title || "")) {
-    findings.push("Summary claims the target identity despite transition-safe positioning");
-  }
-  if (profile && job && normalized(output.summary) === normalized(profile.summary) &&
-    !summaryAlreadyFitsBlueprint(profile, job, plan)) {
-    findings.push("Writer reused the generic base summary despite job-specific summary evidence");
-  }
+  // Summary-claim bookkeeping (mandatory-claim presence, verbatim text, evidence match,
+  // positioning) is intentionally NOT validated here: the summary is the LLM's prose, and
+  // its factual integrity — fabricated numbers and leaked inferred skills — is already
+  // enforced by stripping in sanitizeWriterOutput. Treating claim mismatches as hard
+  // failures would nuke good summaries into the deterministic template. Positioning and
+  // quality are handled by the prompt and the independent critic instead.
   for (const role of output.roles) {
     const planned = rolePlans.get(role.sourceExperienceId);
     if (!planned || !planned.include) {
@@ -1626,8 +1580,8 @@ function fallbackSummary(
     return `Relevant strengths for the ${job.title} role include ${list}.`;
   };
   let summary = [opener, proofSentence(summaryClaims)].filter(Boolean).join(" ").replace(/\s+/g, " ").trim();
-  // Keep this rare deterministic fallback in the same 55-80 band as the LLM summary
-  // gate (summaryOutputUsable) so a fallback summary doesn't read noticeably shorter.
+  // Keep this rare deterministic last-resort fallback in the same 55-80 band the prompt
+  // targets, so a fallback summary doesn't read noticeably shorter than an LLM one.
   if (summary.split(/\s+/).length < 55) {
     summary += ` These verified strengths provide a focused foundation for the core responsibilities and working context of the ${job.title} position.`;
   }
@@ -1668,29 +1622,20 @@ function stripUnsupportedGapSentences(summary: string): string {
     .trim();
 }
 
-function summaryOutputUsable(
-  output: Pick<WriterOutput, "summary" | "summaryClaims">,
-  plan: EvidencePlan,
-  profile: BaseProfile,
-  job: JobDescription
-): boolean {
-  const wordCount = output.summary.trim().split(/\s+/).filter(Boolean).length;
-  // The prompt asks for exactly 3 sentences, 55-68 words; allow a little slack either
-  // side of that band rather than rejecting close-but-not-exact LLM output.
-  if (wordCount < 45 || wordCount > 80 || !output.summaryClaims.length) return false;
-  if (unsupportedSummaryNumbers(output.summary, profile).length) return false;
-  if (normalized(output.summary) === normalized(profile.summary) && !summaryAlreadyFitsBlueprint(profile, job, plan)) return false;
-  if (plan.summaryClaims.filter((claim) => claim.mandatory)
-    .some((claim) => !output.summaryClaims.some((entry) => entry.id === claim.id))) return false;
-  return output.summaryClaims.every((claim) =>
-    normalized(output.summary).includes(normalized(claim.text)) &&
-    plan.summaryClaims.some((planned) =>
-      planned.id === claim.id &&
-      claim.evidence.every((reference) => planned.evidence.some((allowed) =>
-        summaryEvidenceAllowed(reference, allowed)
-      ))
-    )
-  );
+// Remove only the sentence(s) that mention any of the given terms, keeping the rest
+// of the LLM prose intact. Used to excise a leaked inferred-baseline skill or a
+// fabricated number from the summary without discarding the whole thing.
+function stripSentencesContaining(summary: string, terms: string[]): string {
+  const needles = terms.map((term) => normalized(term)).filter(Boolean);
+  if (!needles.length) return summary.trim();
+  return summary
+    .split(/(?<=[.!?])\s+/)
+    .filter((sentence) => {
+      const haystack = normalized(sentence);
+      return !needles.some((needle) => haystack.includes(needle));
+    })
+    .join(" ")
+    .trim();
 }
 
 function sourceBackedWriter(
@@ -1701,10 +1646,18 @@ function sourceBackedWriter(
 ): WriterOutput {
   const sourceById = new Map(profile.experiences.map((role) => [role.id, role]));
   const fallback = fallbackSummary(plan, profile, job);
-  const preserveSummary = preferred && summaryOutputUsable(preferred, plan, profile, job);
+  // This final source-backed pass exists to rebuild roles/skills when there are hard
+  // factual failures. It must not clobber the LLM summary, which sanitizeWriterOutput
+  // already cleaned (fabricated numbers/inferred skills stripped). Keep the LLM prose
+  // unless it is genuinely empty or still asserts an unsupported number.
+  const preserveSummary = Boolean(
+    preferred &&
+    preferred.summary.trim() &&
+    !unsupportedSummaryNumbers(preferred.summary, profile).length
+  );
   return {
-    summary: preserveSummary ? preferred.summary : fallback.summary,
-    summaryClaims: preserveSummary ? preferred.summaryClaims : fallback.summaryClaims,
+    summary: preserveSummary && preferred ? preferred.summary : fallback.summary,
+    summaryClaims: preserveSummary && preferred ? preferred.summaryClaims : fallback.summaryClaims,
     roles: plan.roles.filter((role) => role.include).flatMap((rolePlan) => {
       const source = sourceById.get(rolePlan.sourceExperienceId);
       if (!source) return [];
@@ -1833,47 +1786,61 @@ function sanitizeWriterOutput(
     return [{ sourceExperienceId: source.id, displayTitle, bullets }];
   });
 
+  // Keep the LLM's prose. Enforce honesty by excising only the offending sentence(s),
+  // never by replacing the whole summary with a deterministic template. The template
+  // fallback is reached only when nothing usable survives.
   let summary = candidateSummary;
   let finalSummaryClaims: WriterOutput["summaryClaims"] = summaryClaims;
-  // Allow inferred-baseline skills that are explicit JD requirements — using JD vocabulary in the
-  // summary is intentional alignment, not fabrication. Still block skills the JD doesn't mention.
+
+  // Strip a leaked inferred-baseline skill: one the JD does not name and the base
+  // profile summary did not already assert. Using JD vocabulary is intentional
+  // alignment, so only terms absent from the JD are removed — sentence by sentence.
   const jdText = normalized(`${job?.title || ""} ${job?.description || ""}`);
-  const inferredSummaryClaim = inferredSkills.some((skill) =>
-    !jdText.includes(normalized(skill.skill)) &&
-    normalized(summary).includes(normalized(skill.skill)) &&
-    !normalized(profile.summary).includes(normalized(skill.skill))
-  );
+  const leakedInferredTerms = inferredSkills
+    .map((skill) => skill.skill)
+    .filter((skill) =>
+      !jdText.includes(normalized(skill)) &&
+      normalized(summary).includes(normalized(skill)) &&
+      !normalized(profile.summary).includes(normalized(skill))
+    );
+  if (leakedInferredTerms.length) {
+    summary = stripSentencesContaining(summary, leakedInferredTerms);
+    recoveries.push(recovery("inferred-skill-removed-from-summary", "corrected", "summary"));
+  }
+
+  // Strip any sentence that asserts a number not present in the source (fabricated metric).
   const unsupportedNumbers = unsupportedSummaryNumbers(summary, profile);
-  if (!summary || !summaryClaims.length || inferredSummaryClaim || unsupportedNumbers.length) {
+  if (unsupportedNumbers.length) {
+    summary = stripSentencesContaining(summary, unsupportedNumbers);
+    recoveries.push(recovery("unsupported-summary-number-removed", "corrected", "summary"));
+  }
+
+  // Drop any surviving claim whose text no longer appears in the (possibly stripped) prose.
+  finalSummaryClaims = finalSummaryClaims.filter((claim) => normalized(summary).includes(normalized(claim.text)));
+
+  // If the LLM's own claims didn't survive but prose remains, re-derive claims by
+  // linking plan evidence to sentences already in the summary — no fragments appended.
+  if (summary.trim() && !finalSummaryClaims.length) {
+    finalSummaryClaims = plan.summaryClaims.flatMap((planned) => {
+      const evidenceText = planned.evidence.map((reference) => compactEvidenceText(reference, profile)).find(Boolean) || "";
+      const aligned = alignClaimText(summary, evidenceText, planned.objective);
+      if (!aligned) return [];
+      return [{
+        id: planned.id,
+        text: aligned,
+        evidence: planned.evidence,
+        requirementIds: planned.requirementIds || [],
+        provenance: planned.provenance || "explicit"
+      }];
+    }).slice(0, 4);
+  }
+
+  // Genuine last resort: the LLM returned nothing usable after stripping.
+  if (!summary.trim()) {
     const fallback = sourceBackedWriter(plan, profile, job);
     summary = fallback.summary;
     finalSummaryClaims = fallback.summaryClaims;
-    recoveries.push(recovery(
-      inferredSummaryClaim
-        ? "inferred-skill-removed-from-summary"
-        : unsupportedNumbers.length
-          ? "unsupported-summary-number-removed"
-          : "source-summary-restored",
-      "degraded",
-      "summary"
-    ));
-  }
-  for (const planned of plan.summaryClaims) {
-    if (finalSummaryClaims.length >= 2) break;
-    if (finalSummaryClaims.some((claim) => claim.id === planned.id)) continue;
-    const text = planned.evidence.map((reference) => compactEvidenceText(reference, profile)).find(Boolean) || "";
-    if (!text || textMatchScore(text, summary) >= 4) continue;
-    summary = `${summary.replace(/\s+$/, "")} ${text.replace(/[.!?]+$/, "")}.`
-      .replace(/\s+/g, " ")
-      .trim();
-    finalSummaryClaims.push({
-      id: planned.id,
-      text,
-      evidence: planned.evidence,
-      requirementIds: planned.requirementIds || [],
-      provenance: planned.provenance || "explicit"
-    });
-    recoveries.push(recovery("summary-proof-point-restored", "corrected", "summary"));
+    recoveries.push(recovery("source-summary-restored", "degraded", "summary"));
   }
   if (output.certifications.some((certification) =>
     !profile.certifications.some((source) => normalized(source) === normalized(certification))
