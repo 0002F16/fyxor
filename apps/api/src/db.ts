@@ -47,6 +47,8 @@ const SCHEMA = `
     UNIQUE (user_id, idempotency_key, pipeline_version)
   );
   ALTER TABLE tailoring_runs ADD COLUMN IF NOT EXISTS usage_event_id bigint;
+  ALTER TABLE tailoring_runs ADD COLUMN IF NOT EXISTS started_at timestamptz;
+  ALTER TABLE tailoring_runs ADD COLUMN IF NOT EXISTS finished_at timestamptz;
   CREATE INDEX IF NOT EXISTS tailoring_runs_user_updated
     ON tailoring_runs (user_id, updated_at DESC);
 `;
@@ -207,6 +209,47 @@ export async function adminUsageSummary(): Promise<{
   };
 }
 
+// Platform-wide + per-user in-flight run counts, for the admin "live load" card.
+export async function queueStatus(): Promise<{
+  queued: number;
+  running: number;
+  runningByUser: Array<{ userId: string; email: string; running: number; queued: number }>;
+}> {
+  const [{ rows: totals }, { rows: byUser }] = await Promise.all([
+    pool.query<{ status: string; count: string }>(
+      `SELECT status, count(*)::int AS count FROM tailoring_runs
+         WHERE status IN ('queued','running') GROUP BY status`
+    ),
+    pool.query<{ user_id: string; email: string; running: string; queued: string }>(
+      `SELECT r.user_id, u.email,
+              count(*) FILTER (WHERE r.status = 'running')::int AS running,
+              count(*) FILTER (WHERE r.status = 'queued')::int AS queued
+         FROM tailoring_runs r
+         JOIN "user" u ON u.id = r.user_id
+         WHERE r.status IN ('queued','running')
+         GROUP BY r.user_id, u.email
+         ORDER BY count(*) DESC
+         LIMIT 20`
+    )
+  ]);
+  let queued = 0;
+  let running = 0;
+  for (const row of totals) {
+    if (row.status === "queued") queued = Number(row.count);
+    if (row.status === "running") running = Number(row.count);
+  }
+  return {
+    queued,
+    running,
+    runningByUser: byUser.map((r) => ({
+      userId: r.user_id,
+      email: r.email,
+      running: Number(r.running),
+      queued: Number(r.queued)
+    }))
+  };
+}
+
 export type AdminRunSummary = {
   id: string;
   status: string;
@@ -214,6 +257,8 @@ export type AdminRunSummary = {
   provider: string;
   createdAt: string;
   updatedAt: string;
+  startedAt: string | null;
+  finishedAt: string | null;
   error: string;
 };
 
@@ -230,8 +275,11 @@ export async function userDetail(userId: string, runLimit = 20): Promise<{
       [userId]
     ),
     monthlyUsage(userId),
-    pool.query<{ id: string; status: string; stage: string; provider: string; created_at: Date; updated_at: Date; error: string }>(
-      `SELECT id, status, stage, provider, created_at, updated_at, error
+    pool.query<{
+      id: string; status: string; stage: string; provider: string;
+      created_at: Date; updated_at: Date; started_at: Date | null; finished_at: Date | null; error: string;
+    }>(
+      `SELECT id, status, stage, provider, created_at, updated_at, started_at, finished_at, error
          FROM tailoring_runs WHERE user_id = $1
          ORDER BY updated_at DESC LIMIT $2`,
       [userId, Math.min(Math.max(runLimit, 1), 100)]
@@ -250,6 +298,8 @@ export async function userDetail(userId: string, runLimit = 20): Promise<{
       provider: r.provider,
       createdAt: r.created_at instanceof Date ? r.created_at.toISOString() : String(r.created_at),
       updatedAt: r.updated_at instanceof Date ? r.updated_at.toISOString() : String(r.updated_at),
+      startedAt: r.started_at ? r.started_at.toISOString() : null,
+      finishedAt: r.finished_at ? r.finished_at.toISOString() : null,
       error: r.error ?? ""
     }))
   };

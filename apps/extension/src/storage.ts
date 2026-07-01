@@ -55,6 +55,13 @@ export async function getAuthToken(): Promise<string | null> {
   return (await getState()).auth?.token ?? null;
 }
 
-export async function setTailoringJob(job: TailoringJob | null): Promise<StorageState> {
-  return updateState((state) => ({ ...state, tailoringJob: job }));
+export async function upsertTailoringJob(jobKey: string, job: TailoringJob): Promise<StorageState> {
+  return updateState((state) => ({ ...state, tailoringJobs: { ...state.tailoringJobs, [jobKey]: job } }));
+}
+
+export async function removeTailoringJob(jobKey: string): Promise<StorageState> {
+  return updateState((state) => {
+    const { [jobKey]: _removed, ...rest } = state.tailoringJobs;
+    return { ...state, tailoringJobs: rest };
+  });
 }

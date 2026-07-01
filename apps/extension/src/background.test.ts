@@ -2,7 +2,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   getState: vi.fn(),
-  setTailoringJob: vi.fn(),
+  upsertTailoringJob: vi.fn(),
+  removeTailoringJob: vi.fn(),
   updateState: vi.fn(),
   tailor: vi.fn(),
   messageListener: null as ((message: any, sender: any, sendResponse: (response: any) => void) => void) | null
@@ -13,7 +14,8 @@ vi.mock("./selection", () => ({ jobFromSelection: vi.fn() }));
 vi.mock("./storage", () => ({
   getState: mocks.getState,
   queuePendingJob: vi.fn(),
-  setTailoringJob: mocks.setTailoringJob,
+  upsertTailoringJob: mocks.upsertTailoringJob,
+  removeTailoringJob: mocks.removeTailoringJob,
   updateState: mocks.updateState
 }));
 
@@ -23,15 +25,22 @@ describe("background tailoring start", () => {
     vi.clearAllMocks();
     mocks.messageListener = null;
     mocks.getState.mockResolvedValue({
-      tailoringJob: {
-        status: "running",
-        error: "",
-        cvId: "",
-        jobKey: "https://jobs.example/1",
-        startedAt: Date.now()
-      }
+      // A different job's finished run is already tracked in storage; starting
+      // a new job must not be blocked by it now that several can run at once.
+      tailoringJobs: {
+        "https://jobs.example/other": {
+          status: "done",
+          error: "",
+          cvId: "cv-other",
+          runId: "run-other",
+          jobKey: "https://jobs.example/other",
+          startedAt: 0
+        }
+      },
+      settings: { apiBaseUrl: "http://127.0.0.1:8787", aiProvider: "deepseek-api" }
     });
-    mocks.setTailoringJob.mockResolvedValue(undefined);
+    mocks.upsertTailoringJob.mockResolvedValue(undefined);
+    mocks.removeTailoringJob.mockResolvedValue(undefined);
     mocks.updateState.mockResolvedValue(undefined);
     mocks.tailor.mockResolvedValue({ id: "cv-1" });
 
@@ -64,7 +73,7 @@ describe("background tailoring start", () => {
     });
   });
 
-  it("starts the API request even when storage contains the popup's running UI slot", async () => {
+  it("starts the API request even when storage contains a different job's running slot", async () => {
     await import("./background");
 
     const sendResponse = vi.fn();
@@ -90,5 +99,24 @@ describe("background tailoring start", () => {
       expect.any(AbortSignal),
       expect.any(Function)
     );
+  });
+
+  it("refuses to start the same job twice while it's already tracked", async () => {
+    await import("./background");
+
+    const payload = {
+      apiBaseUrl: "http://127.0.0.1:8787",
+      aiProvider: "gemini-api",
+      profile: { id: "profile-1" },
+      job: { title: "Engineer", company: "Acme", url: "https://jobs.example/dup" },
+      tailoringEngine: "ccc"
+    };
+    const first = vi.fn();
+    const second = vi.fn();
+    mocks.messageListener?.({ type: "CV_TAILOR_START_TAILORING", payload }, {}, first);
+    mocks.messageListener?.({ type: "CV_TAILOR_START_TAILORING", payload }, {}, second);
+
+    expect(first).toHaveBeenCalledWith({ ok: true });
+    expect(second).toHaveBeenCalledWith({ ok: false });
   });
 });

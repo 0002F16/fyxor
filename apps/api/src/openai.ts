@@ -1,4 +1,3 @@
-import OpenAI from "openai";
 import { z } from "zod";
 
 export type GenerateInput<T> = {
@@ -95,39 +94,4 @@ export function zodToJsonSchema(schema: z.ZodTypeAny): Record<string, unknown> {
     return zodToJsonSchema(definition.schema);
   }
   throw new Error(`Unsupported schema type: ${definition.typeName}`);
-}
-
-export class OpenAIGenerator implements Generator {
-  lastUsage?: { inputTokens?: number; outputTokens?: number };
-  private client: OpenAI;
-  private model: string;
-
-  constructor(apiKey = process.env.OPENAI_API_KEY, model = process.env.OPENAI_MODEL || "gpt-5.5") {
-    if (!apiKey) throw new Error("OPENAI_API_KEY is not configured");
-    this.client = new OpenAI({ apiKey });
-    this.model = model;
-  }
-
-  async generate<T>({ name, schema, instructions, payload }: GenerateInput<T>): Promise<T> {
-    const response = await this.client.responses.create({
-      model: this.model,
-      store: false,
-      reasoning: { effort: "low" },
-      instructions,
-      input: JSON.stringify(payload),
-      text: {
-        format: {
-          type: "json_schema",
-          name,
-          strict: true,
-          schema: zodToJsonSchema(schema)
-        }
-      }
-    }, { timeout: LLM_TIMEOUT_MS });
-    this.lastUsage = {
-      inputTokens: response.usage?.input_tokens,
-      outputTokens: response.usage?.output_tokens
-    };
-    return schema.parse(normalizeStructuredOutput(name, JSON.parse(response.output_text)));
-  }
 }

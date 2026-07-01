@@ -1,15 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle, ArrowLeft, ArrowRight, BriefcaseBusiness, Check, ChevronDown, Cloud, CloudOff,
-  Copy, Download, Eye, ExternalLink, FilePenLine, FileText, Files, GripVertical, LayoutGrid,
-  Lightbulb, LoaderCircle, LogOut, MoreVertical, MousePointerClick, Palette, PenLine, Pin, Plus,
-  Reply, Rows3, Save, Send, Sparkles, Trash2, Upload, X
+  Copy, Download, Eye, EyeOff, ExternalLink, FilePenLine, FileText, Files, GripVertical, LayoutGrid,
+  Lightbulb, LoaderCircle, Lock, LogOut, Mail, MoreVertical, MousePointerClick, Palette, PenLine, Pin, Plus,
+  Reply, Rows3, Save, Send, Sparkles, Trash2, Upload, User, X
 } from "lucide-react";
 import {
   DndContext, DragOverlay, PointerSensor, useDraggable, useDroppable, useSensor, useSensors,
   type DragEndEvent, type DragStartEvent
 } from "@dnd-kit/core";
 import {
+  activeTailoringJobs,
   applyRegeneratedSection,
   baseProfileToExportCv,
   bulletHasMetric,
@@ -40,7 +41,8 @@ import { CvDocument } from "@cv-tailor/shared";
 import { PaginatedPreview } from "./PaginatedPreview";
 import { ResumeStrength } from "./ResumeStrength";
 import { evaluateResume, sectionCompleteness, type ProfileSectionId } from "./resumeChecks";
-import { clearAuthSession, clearAuthToken, getState, setAuthSession, setState, updateState } from "./storage";
+import { clearAuthSession, clearAuthToken, getState, removeTailoringJob, setAuthSession, setState, updateState } from "./storage";
+import { TailorRunCard } from "./TailorRunCard";
 
 // Centralized handling for an expired session (401). Drops only the local bearer
 // token so the app falls back to the sign-in gate, but KEEPS local data — it may
@@ -1058,12 +1060,15 @@ function Home({ state, onChange: _onChange }: { state: StorageState; onChange: (
   );
   const topCheck = health?.checks[0];
 
-  const job = state.tailoringJob;
-  const activeRun = job && (job.status === "running" || job.status === "error") ? job : null;
-  // When no run is mid-flight, the most-recently-touched application becomes the
-  // "continue editing" hero. It's then excluded from the recent list so it isn't
-  // shown twice.
-  const continueRecord = !activeRun ? recent[0] : undefined;
+  // A run's card stays visible on Home until dismissed (errors) or opened
+  // (done was already folded into `applications` by the background worker, so
+  // only queued/running/error entries remain here).
+  const tailoringEntries = Object.entries(state.tailoringJobs).filter(([, tj]) => tj.status !== "done");
+  const activeCount = activeTailoringJobs(state).length;
+  // When nothing is mid-flight, the most-recently-touched application becomes
+  // the "continue editing" hero. It's then excluded from the recent list so it
+  // isn't shown twice.
+  const continueRecord = tailoringEntries.length === 0 ? recent[0] : undefined;
   const listRecords = (continueRecord ? recent.slice(1) : recent).slice(0, 3);
 
   const tailoredThisMonth = usage?.byAction.tailor ?? 0;
@@ -1072,30 +1077,27 @@ function Home({ state, onChange: _onChange }: { state: StorageState; onChange: (
   const hasApps = state.applications.length > 0;
 
   const subline = !state.profile ? "Let's set up your base resume to get started."
-    : activeRun?.status === "running" ? "We're tailoring your resume right now."
+    : activeCount > 0 ? `Tailoring ${activeCount} resume${activeCount > 1 ? "s" : ""} right now.`
     : hasApps ? `${tailoredThisMonth} tailored this month — keep the momentum going.`
     : "Open a job post and tailor your first resume.";
 
   return <Shell title={`${greeting()}, ${firstName(state)} 👋`} eyebrow="Your launchpad">
     <p className="home-rise -mt-3 mb-6 text-muted">{subline}</p>
 
-    {/* Smart primary action — one state-aware hero card. */}
+    {/* Smart primary action — one state-aware hero card, or a stack of one per
+        in-flight/errored tailoring run. */}
     <div className="home-rise mb-6">{
-      activeRun?.status === "running"
-      ? <div className="card border-emerald bg-mint/30 !p-6">
-          <p className="text-xs font-semibold uppercase tracking-[.1em] text-emerald">Tailoring in progress</p>
-          <div className="mt-1 flex items-center gap-2"><LoaderCircle size={20} className="animate-spin text-deep" /><h2 className="font-display text-xl font-bold text-deep">{TAILORING_STAGE_LABELS[activeRun.stage] || "Working on your CV…"}</h2></div>
-          <div className="mt-4 h-2 w-full overflow-hidden rounded-full bg-white/70"><div className="h-full rounded-full bg-emerald transition-all" style={{ width: `${Math.max(5, activeRun.progress)}%` }} /></div>
-          {!!activeRun.cvId && <button className="btn-secondary mt-5 !bg-white" onClick={() => { location.hash = `#editor/${activeRun.cvId}`; }}><FilePenLine size={15} /> Open draft</button>}
-        </div>
-      : activeRun?.status === "error"
-      ? <div className="rounded-2xl border border-amber-300 bg-amber-50 p-6 text-amber-950">
-          <div className="flex items-start justify-between gap-2">
-            <div className="flex gap-2 font-semibold"><AlertTriangle size={18} /> Last tailoring didn't finish</div>
-            <button className="shrink-0 text-amber-700 hover:text-amber-950" onClick={() => updateState((s) => ({ ...s, tailoringJob: null })).then(_onChange)} aria-label="Dismiss"><X size={16} /></button>
-          </div>
-          <p className="mt-1 text-sm">{/^\s*[\[{]/.test(activeRun.error || "") ? "Something went wrong on our end. Please try tailoring again." : activeRun.error || "Something interrupted the last run. Reopen the job from the extension to try again."}</p>
-          {!!activeRun.cvId && <button className="btn-secondary mt-4 !bg-white" onClick={() => { location.hash = `#editor/${activeRun.cvId}`; }}><FilePenLine size={15} /> Open last draft</button>}
+      tailoringEntries.length > 0
+      ? <div className="space-y-3">
+          {activeCount > 1 && <p className="text-xs font-semibold uppercase tracking-[.1em] text-emerald">{activeCount} tailors in progress</p>}
+          {tailoringEntries.map(([key, tj]) => (
+            <TailorRunCard
+              key={key}
+              job={tj}
+              onOpen={(cvId) => { location.hash = `#editor/${cvId}`; }}
+              onDismiss={tj.status === "error" ? () => { void removeTailoringJob(key).then(_onChange); } : undefined}
+            />
+          ))}
         </div>
       : !state.profile
       ? <div className="card flex flex-col gap-4 border-emerald bg-mint/30 !p-6 sm:flex-row sm:items-center sm:justify-between">
@@ -2073,10 +2075,11 @@ function PinScreen({ state, onChange }: { state: StorageState; onChange: (s: Sto
 }
 
 function Auth({ state, onChange }: { state: StorageState; onChange: (s: StorageState) => void }) {
-  const [mode, setMode] = useState<"signup" | "signin">("signup");
+  const [mode, setMode] = useState<"signup" | "signin">("signin");
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const base = state.settings.apiBaseUrl;
@@ -2110,10 +2113,11 @@ function Auth({ state, onChange }: { state: StorageState; onChange: (s: StorageS
         }
       } catch { /* empty/offline — proceed with the local state */ }
       onChange(next);
-      // No profile yet → first-run Welcome. A profile that's still mid-setup
+      // No profile yet → drop straight into onboarding (its "source" step already
+      // offers upload/paste/build-from-scratch). A profile that's still mid-setup
       // (saved onboardingStep, not yet complete) resumes onboarding directly
       // instead of bouncing through #home and its "Resuming your setup…" guard.
-      if (!next.profile) location.hash = "#welcome";
+      if (!next.profile) location.hash = "#onboarding/upload";
       else if (!next.settings.onboardingComplete && next.settings.onboardingStep)
         location.hash = `#onboarding/${next.profile.rawText ? "upload" : "manual"}`;
       else location.hash = "#home";
@@ -2122,26 +2126,75 @@ function Auth({ state, onChange }: { state: StorageState; onChange: (s: StorageS
     } finally { setBusy(false); }
   }
 
+  const isSignup = mode === "signup";
+  function switchMode(next: "signup" | "signin") {
+    if (next === mode) return;
+    setMode(next); setError(""); setShowPassword(false);
+  }
+
   return (
-    <div className="min-h-screen bg-soft">
-      <main className="mx-auto max-w-md px-4 py-12">
-        <div className="flex items-center gap-2.5"><Logo /><span className="font-display font-bold">Fyxor</span></div>
-        <p className="mt-8 text-xs font-semibold uppercase tracking-[.1em] text-emerald">{mode === "signup" ? "Create your account" : "Welcome back"}</p>
-        <h1 className="mt-2 font-display text-3xl font-bold tracking-tight">{mode === "signup" ? "Start tailoring your CV" : "Sign in to Fyxor"}</h1>
-        <p className="mt-3 text-muted">{mode === "signup" ? "Create an account to save your CV to the cloud and use it on any device." : "Sign in to load your saved CV and applications."}</p>
+    <div className="relative min-h-screen overflow-hidden bg-soft">
+      {/* Soft ambient glow behind the card — brand emerald, kept subtle. */}
+      <div aria-hidden className="pointer-events-none absolute inset-x-0 -top-40 h-80 bg-gradient-to-b from-mint/70 to-transparent blur-2xl" />
+      <div aria-hidden className="pointer-events-none absolute -left-24 top-24 h-64 w-64 rounded-full bg-emerald/10 blur-3xl" />
+      <div aria-hidden className="pointer-events-none absolute -right-20 top-56 h-56 w-56 rounded-full bg-deep/10 blur-3xl" />
 
-        <form className="card mt-8 space-y-4" onSubmit={submit}>
-          {error && <ErrorBox message={error} />}
-          {mode === "signup" && <label className="block"><span className="label">Name</span><input className="field" value={name} onChange={(e) => setName(e.target.value)} placeholder="Your name" /></label>}
-          <label className="block"><span className="label">Email</span><input className="field" type="email" required value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@example.com" /></label>
-          <label className="block"><span className="label">Password</span><input className="field" type="password" required minLength={8} value={password} onChange={(e) => setPassword(e.target.value)} placeholder="At least 8 characters" /></label>
-          <button className="btn-primary w-full" disabled={busy} type="submit">{busy ? <Loading label="Please wait…" /> : <>{mode === "signup" ? <><Sparkles size={16} /> Create account</> : <><ArrowRight size={16} /> Sign in</>}</>}</button>
-        </form>
+      <main className="relative mx-auto flex min-h-screen max-w-md flex-col justify-center px-5 py-12">
+        <div className="mb-8 flex items-center gap-2.5"><Logo /><span className="font-display text-lg font-bold tracking-tight">Fyxor</span></div>
 
-        <p className="mt-5 text-center text-sm text-muted">
-          {mode === "signup" ? "Already have an account? " : "New to Fyxor? "}
-          <button className="font-semibold text-emerald hover:underline" onClick={() => { setMode(mode === "signup" ? "signin" : "signup"); setError(""); }}>
-            {mode === "signup" ? "Sign in" : "Create one"}
+        <div className="rounded-3xl border border-line bg-white/90 p-7 shadow-soft backdrop-blur-sm">
+          {/* Segmented Sign in / Sign up toggle */}
+          <div className="mb-7 grid grid-cols-2 gap-1 rounded-2xl bg-soft p-1">
+            <button type="button" onClick={() => switchMode("signin")}
+              className={`rounded-xl px-4 py-2 text-sm font-semibold transition ${!isSignup ? "bg-white text-ink shadow-soft" : "text-muted hover:text-ink"}`}>
+              Sign in
+            </button>
+            <button type="button" onClick={() => switchMode("signup")}
+              className={`rounded-xl px-4 py-2 text-sm font-semibold transition ${isSignup ? "bg-white text-ink shadow-soft" : "text-muted hover:text-ink"}`}>
+              Sign up
+            </button>
+          </div>
+
+          <h1 className="font-display text-2xl font-bold tracking-tight">{isSignup ? "Start tailoring your CV" : "Welcome back"}</h1>
+          <p className="mt-1.5 text-sm text-muted">{isSignup ? "Create an account to save your CV to the cloud and use it on any device." : "Sign in to load your saved CV and applications."}</p>
+
+          <form className="mt-6 space-y-4" onSubmit={submit}>
+            {error && <ErrorBox message={error} />}
+            {isSignup && (
+              <label className="block">
+                <span className="label">Name</span>
+                <div className="relative">
+                  <User size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
+                  <input className="field !pl-9" value={name} onChange={(e) => setName(e.target.value)} placeholder="Your name" />
+                </div>
+              </label>
+            )}
+            <label className="block">
+              <span className="label">Email</span>
+              <div className="relative">
+                <Mail size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
+                <input className="field !pl-9" type="email" required value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@example.com" />
+              </div>
+            </label>
+            <label className="block">
+              <span className="label">Password</span>
+              <div className="relative">
+                <Lock size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
+                <input className="field !pl-9 !pr-10" type={showPassword ? "text" : "password"} required minLength={8} value={password} onChange={(e) => setPassword(e.target.value)} placeholder={isSignup ? "At least 8 characters" : "Your password"} />
+                <button type="button" onClick={() => setShowPassword((v) => !v)} aria-label={showPassword ? "Hide password" : "Show password"}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 rounded-lg p-1.5 text-muted transition hover:bg-soft hover:text-ink">
+                  {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                </button>
+              </div>
+            </label>
+            <button className="btn-primary w-full" disabled={busy} type="submit">{busy ? <Loading label="Please wait…" /> : <>{isSignup ? <><Sparkles size={16} /> Create account</> : <><ArrowRight size={16} /> Sign in</>}</>}</button>
+          </form>
+        </div>
+
+        <p className="mt-6 text-center text-sm text-muted">
+          {isSignup ? "Already have an account? " : "New to Fyxor? "}
+          <button className="font-semibold text-emerald hover:underline" onClick={() => switchMode(isSignup ? "signin" : "signup")}>
+            {isSignup ? "Sign in" : "Create one"}
           </button>
         </p>
       </main>

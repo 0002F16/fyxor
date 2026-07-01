@@ -1,13 +1,16 @@
 import { useEffect, useState } from "react";
 import { ArrowLeft, Check, ExternalLink, Home, LayoutDashboard, LoaderCircle, Sparkles } from "lucide-react";
-import { activeTailoringFor, selectPopupView } from "./popupView";
+import { activeTailoringForJobs, selectPopupView } from "./popupView";
 import {
+  activeTailoringJobs,
   migrateStorage,
+  tailoringJobKey,
   type JobDescription,
   type StorageState,
 } from "@cv-tailor/shared";
-import { TAILOR_STAGES, useStagedProgress } from "./progress";
-import { clearPendingJob, getState, queuePendingJob, setTailoringJob } from "./storage";
+import { useTailorFlavor } from "./tailorFlavor";
+import { TailorRunCard } from "./TailorRunCard";
+import { clearPendingJob, getState, queuePendingJob, removeTailoringJob, upsertTailoringJob } from "./storage";
 import type { LinkedInScanResult } from "./scraper";
 import { sendLinkedInMessage } from "./linkedinMessaging";
 
@@ -60,15 +63,18 @@ export function Popup() {
 
   useEffect(() => {
     Promise.all([getState(), waitForLinkedInScan()]).then(([stored, scan]) => {
-      // A "running" job older than the watchdog window was orphaned by a
-      // terminated service worker — surface it as an error instead of a
+      // A "running"/"queued" job older than the watchdog window was orphaned by
+      // a terminated service worker — surface it as an error instead of a
       // spinner the user can never escape.
-      const tj = stored.tailoringJob;
-      if (tj?.status === "running" && Date.now() - (tj.startedAt || 0) > STALE_MS) {
-        const errored = { status: "error" as const, error: "Tailoring took too long or was interrupted. Please try again.", cvId: "", runId: tj.runId, stage: "", progress: 0, jobKey: tj.jobKey, startedAt: 0 };
-        stored = { ...stored, tailoringJob: errored };
-        void setTailoringJob(errored);
+      const tailoringJobs = { ...stored.tailoringJobs };
+      for (const [key, tj] of Object.entries(tailoringJobs)) {
+        if ((tj.status === "running" || tj.status === "queued") && Date.now() - (tj.startedAt || 0) > STALE_MS) {
+          const errored = { status: "error" as const, error: "Tailoring took too long or was interrupted. Please try again.", cvId: "", runId: tj.runId, stage: "", progress: 0, jobKey: tj.jobKey, startedAt: 0 };
+          tailoringJobs[key] = errored;
+          void upsertTailoringJob(key, errored);
+        }
       }
+      stored = { ...stored, tailoringJobs };
       setState(stored);
       setLinkedinScan(scan);
       setJob(stored.pendingJob || (scan?.status === "ready" ? scan.job : null));
@@ -97,16 +103,24 @@ export function Popup() {
     if (scan?.status === "ready") setJob(scan.job);
   }
 
-  async function reset() {
-    // Abort any in-flight tailoring in the background so Cancel truly stops it
-    // (otherwise the run completes and a CV appears despite the cancel).
-    chrome.runtime.sendMessage({ type: "CV_TAILOR_CANCEL_TAILORING" }).catch(() => {});
+  // Navigate back to job selection WITHOUT touching any in-flight tailoring —
+  // with several tailors able to run at once, leaving this job's screen must
+  // not cancel its run; the user can come back later and find it done.
+  async function goBack() {
     const next = await clearPendingJob();
-    await setTailoringJob(null);
     setState(next);
     setJob(null);
     setError("");
     chrome.action.setBadgeText({ text: "" });
+  }
+
+  // Explicit Cancel while this job is tailoring: abort just this job's run in
+  // the background (otherwise it completes and a CV appears despite the
+  // cancel), then navigate back.
+  async function cancelCurrentJob() {
+    const jobKey = job ? tailoringJobKey(job) : "";
+    if (jobKey) chrome.runtime.sendMessage({ type: "CV_TAILOR_CANCEL_TAILORING", jobKey }).catch(() => {});
+    await goBack();
   }
 
   // Edit the captured title/company before tailoring. Local state drives generate();
@@ -138,7 +152,7 @@ export function Popup() {
           tailoringEngine: state.settings.tailoringEngine
         }
       });
-      if (!response?.ok) setError("Another tailoring run is already in progress.");
+      if (!response?.ok) setError("This job is already tailoring.");
     } catch {
       setError("Couldn't reach the extension background. Please try again.");
     } finally {
@@ -146,25 +160,22 @@ export function Popup() {
     }
   }
 
-  const tailoringJob = state?.tailoringJob ?? null;
-  // Only the tailoring slot that belongs to the job on screen governs the popup
-  // (see activeTailoringFor) — a finished/old job must not hijack the UI for a
-  // different, freshly selected job.
-  const activeTailoring = activeTailoringFor(tailoringJob, job);
-  const busy = startingTailoring || activeTailoring?.status === "running";
-  const serverStage: Record<string, string> = {
-    queued: "Queued…",
-    planning: "Planning evidence…",
-    writing: "Writing your CV…",
-    validating: "Checking factual support…",
-    critic: "Reviewing quality…",
-    repairing: "Repairing flagged content…",
-    completed: "Finalizing…"
-  };
-  const fallbackStage = useStagedProgress(busy, TAILOR_STAGES);
-  const tailorStage = activeTailoring?.stage
-    ? (serverStage[activeTailoring.stage] || activeTailoring.stage)
-    : fallbackStage;
+  const tailoringJobs = state?.tailoringJobs ?? {};
+  // Only the tailoring slot that belongs to the job on screen governs the main
+  // card (see activeTailoringForJobs) — a finished/old job must not hijack the
+  // UI for a different, freshly selected job.
+  const activeTailoring = activeTailoringForJobs(tailoringJobs, job);
+  const busy = startingTailoring || activeTailoring?.status === "running" || activeTailoring?.status === "queued";
+  const queued = !startingTailoring && activeTailoring?.status === "queued";
+  const flavor = useTailorFlavor(busy && !queued, job ? tailoringJobKey(job).length : 0);
+  const tailorStage = queued ? "Waiting for a free lane…" : flavor;
+
+  // Other jobs tailoring in the background, so the popup shows the full
+  // picture even while looking at a different job.
+  const otherRuns = Object.entries(tailoringJobs).filter(([key, tj]) =>
+    key !== (job ? tailoringJobKey(job) : "") && (tj.status === "running" || tj.status === "queued")
+  );
+  const totalActive = activeTailoringJobs({ tailoringJobs }).length;
 
   if (!state) return <div className="popup-loading"><LoaderCircle className="animate-spin" size={18} /> Loading Fyxor...</div>;
 
@@ -174,8 +185,16 @@ export function Popup() {
   return <div className="popup-shell">
     <header className="popup-header">
       <div className="popup-brand"><Logo /><span>Fyxor</span></div>
-      {job && <button className="popup-icon-button" aria-label="Adjust another resume" onClick={reset}><ArrowLeft size={18} /></button>}
+      {job && <button className="popup-icon-button" aria-label="Adjust another resume" onClick={goBack}><ArrowLeft size={18} /></button>}
     </header>
+
+    {/* Other jobs tailoring in the background — visible from any screen so the
+        user always sees the full picture, not just the job on screen. */}
+    {otherRuns.length > 0 && <div className="popup-other-runs space-y-2 px-4 pt-3">
+      {otherRuns.map(([key, tj]) => (
+        <TailorRunCard key={key} job={tj} onOpen={(cvId) => openFullPage(`#editor/${cvId}`)} />
+      ))}
+    </div>}
 
     {view === "signed-out" ? <main className="popup-main popup-centered">
       <p className="popup-eyebrow">Welcome to Fyxor</p>
@@ -225,11 +244,18 @@ export function Popup() {
       <div className="popup-preview">{job?.description}</div>
       {(error || activeTailoring?.error) && <div className="popup-error">{showError(error || activeTailoring?.error)}</div>}
       {activeTailoring?.status === "done" ? <div className="popup-actions">
-        <button className="popup-primary" onClick={() => { openFullPage(`#editor/${activeTailoring.cvId}`); setTailoringJob(null); }}><ExternalLink size={16} /> Open your tailored CV</button>
-        <button className="popup-link" onClick={reset}><ArrowLeft size={14} /> Adjust another resume</button>
-      </div> : busy ? <div className="popup-progress"><div className="popup-busy"><LoaderCircle className="animate-spin" size={17} /> {tailorStage}</div><p className="popup-progress-note">Tailoring can take a minute or two — feel free to close this popup.</p><button className="popup-link" onClick={reset}>Cancel</button></div> : <div className="popup-actions">
+        <button className="popup-primary" onClick={() => { openFullPage(`#editor/${activeTailoring.cvId}`); if (job) void removeTailoringJob(tailoringJobKey(job)); }}><ExternalLink size={16} /> Open your tailored CV</button>
+        <button className="popup-link" onClick={goBack}><ArrowLeft size={14} /> Adjust another resume</button>
+      </div> : busy ? <div className="popup-progress">
+        <div className="popup-busy"><LoaderCircle className="animate-spin" size={17} /> {tailorStage}</div>
+        <p className="popup-progress-note">
+          {queued ? "It'll start automatically as soon as a lane frees up." : "Tailoring can take a minute or two — feel free to close this popup."}
+          {totalActive > 1 ? ` (${totalActive} tailoring right now)` : ""}
+        </p>
+        <button className="popup-link" onClick={cancelCurrentJob}>Cancel</button>
+      </div> : <div className="popup-actions">
         <button className="popup-primary" onClick={generate}><Sparkles size={16} /> Generate tailored CV</button>
-        <button className="popup-link" onClick={reset}><ArrowLeft size={14} /> Adjust another resume</button>
+        <button className="popup-link" onClick={goBack}><ArrowLeft size={14} /> Adjust another resume</button>
       </div>}
     </main>}
 

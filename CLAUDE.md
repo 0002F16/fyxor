@@ -83,13 +83,32 @@ They are reachable only when `ENABLE_LEGACY_ENGINES=true`.
 
 Check availability: `GET /health` returns `{ ccc: { available, engineRoot, python } }`
 
+## Concurrent tailoring runs
+
+Users can have several tailors in flight at once (extension shows up to 3
+running + more queued). This is enforced server-side, not client-side: an
+in-process scheduler in `apps/api/src/tailoringRuns.ts` holds newly created
+runs at `status="queued"` until both caps have room, then starts them via the
+existing `executeRun`.
+
+- `PER_USER_MAX_CONCURRENT_TAILORS` (default 3) — cap per user.
+- `GLOBAL_MAX_CONCURRENT_TAILORS` (default 6) — cap across all users on this
+  VPS process; the primary guard against overloading DeepSeek/CPU. Tune it
+  against `GET /health`'s `load` block (queued/running counts, memory, DB pool)
+  and DeepSeek's own rate limits.
+- The scheduler drains FIFO as running runs finish; it survives a server
+  restart via the existing `recoverTailoringRuns()` recovery path.
+- `tailoring_runs` also has `started_at`/`finished_at` columns (queued→running
+  and →terminal transitions) so wait time and actual duration can be computed
+  separately from `created_at`/`updated_at`.
+
 ## API routes
 
 All routes under `/api/*` require auth (Better Auth bearer token) except `/health`, `/api/profile/parse-file`, and `/api/cvs/export`.
 
 | Method | Path | What it does |
 |--------|------|--------------|
-| GET | `/health` | Status + provider/CCC availability |
+| GET | `/health` | Status + provider/CCC availability + load (memory, DB pool, queue depth) |
 | POST | `/api/profile/parse-file` | Parse uploaded PDF/DOCX → raw text |
 | POST | `/api/profile/extract` | LLM: raw text → structured `BaseProfile` |
 | POST | `/api/profile/categorize-skills` | LLM: skills list → categorized skills |
@@ -104,6 +123,7 @@ All routes under `/api/*` require auth (Better Auth bearer token) except `/healt
 | GET | `/api/admin/summary` | Admin-only: platform usage rollup |
 | GET | `/api/admin/users` | Admin-only: account list + per-user tailor counts |
 | GET | `/api/admin/users/:id` | Admin-only: one user's usage + recent runs |
+| GET | `/api/admin/queue-status` | Admin-only: live queued/running counts, global scheduler state |
 
 ## Admin dashboard
 

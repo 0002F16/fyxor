@@ -6,6 +6,12 @@
       "runtimeExecutable": "npx",
       "runtimeArgs": ["serve", "-p", "8911", "apps/extension/dist"],
       "port": 8911
+    },
+    {
+      "name": "api",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev", "-w", "@cv-tailor/api"],
+      "port": 8787
     }
   ]
 }

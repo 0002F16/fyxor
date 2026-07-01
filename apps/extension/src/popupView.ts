@@ -16,6 +16,19 @@ export function activeTailoringFor(
   return tailoringJob.jobKey === tailoringJobKey(job) ? tailoringJob : null;
 }
 
+// Same lookup, but against the multi-run map: keyed match when a job is on
+// screen, or the most recently started run when none is selected (so the
+// "just finished" happy path still surfaces without a specific job in view).
+export function activeTailoringForJobs(
+  tailoringJobs: Record<string, TailoringJob>,
+  job: JobDescription | null
+): TailoringJob | null {
+  if (job) return activeTailoringFor(tailoringJobs[tailoringJobKey(job)] ?? null, job);
+  const jobs = Object.values(tailoringJobs);
+  if (!jobs.length) return null;
+  return jobs.reduce((latest, candidate) => (candidate.startedAt > latest.startedAt ? candidate : latest));
+}
+
 export type PopupView =
   | "signed-out"
   | "linkedin-loading"

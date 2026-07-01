@@ -20,10 +20,58 @@ type StoredRun = TailoringRunStatus & {
   request?: RunRequest;
   cancelRequested: boolean;
   usageEventId?: string;
+  startedAt?: string;
+  finishedAt?: string;
 };
 
 const memoryRuns = new Map<string, StoredRun>();
 const activeRuns = new Set<string>();
+
+// Concurrency scheduler: runs are created as "queued" and only actually start
+// (via executeRun) once both caps have room, so a burst of requests degrades
+// to a FIFO wait instead of piling unbounded work onto this one VPS process.
+type QueueEntry = { run: StoredRun; testMode: boolean; generatorFactory?: () => Generator };
+const waiting: QueueEntry[] = [];
+const activeByUser = new Map<string, number>();
+const PER_USER_MAX = Number(process.env.PER_USER_MAX_CONCURRENT_TAILORS) || 3;
+const GLOBAL_MAX = Number(process.env.GLOBAL_MAX_CONCURRENT_TAILORS) || 6;
+
+export function schedulerStatus(): { queued: number; running: number; globalMax: number; perUserMax: number } {
+  return { queued: waiting.length, running: activeRuns.size, globalMax: GLOBAL_MAX, perUserMax: PER_USER_MAX };
+}
+
+function schedule(): void {
+  for (let i = 0; i < waiting.length; i++) {
+    const entry = waiting[i];
+    if (!entry) continue;
+    if (entry.run.cancelRequested) {
+      waiting.splice(i, 1);
+      i--;
+      continue;
+    }
+    if (activeRuns.size >= GLOBAL_MAX) break;
+    if ((activeByUser.get(entry.run.userId) || 0) >= PER_USER_MAX) continue;
+    waiting.splice(i, 1);
+    i--;
+    startEntry(entry);
+  }
+}
+
+function startEntry(entry: QueueEntry): void {
+  const userId = entry.run.userId;
+  activeByUser.set(userId, (activeByUser.get(userId) || 0) + 1);
+  void executeRun(entry.run, entry.testMode, entry.generatorFactory).finally(() => {
+    const remaining = (activeByUser.get(userId) || 1) - 1;
+    if (remaining <= 0) activeByUser.delete(userId);
+    else activeByUser.set(userId, remaining);
+    schedule();
+  });
+}
+
+function enqueue(entry: QueueEntry): void {
+  waiting.push(entry);
+  schedule();
+}
 
 function idempotencyKey(userId: string, request: RunRequest): string {
   return createHash("sha256").update(JSON.stringify({
@@ -77,7 +125,9 @@ function rowToRun(row: Record<string, unknown>): StoredRun {
     provider: row.provider as AiProvider,
     request,
     cancelRequested: Boolean(row.cancel_requested),
-    usageEventId: row.usage_event_id ? String(row.usage_event_id) : undefined
+    usageEventId: row.usage_event_id ? String(row.usage_event_id) : undefined,
+    startedAt: row.started_at ? new Date(String(row.started_at)).toISOString() : undefined,
+    finishedAt: row.finished_at ? new Date(String(row.finished_at)).toISOString() : undefined
   };
 }
 
@@ -87,7 +137,7 @@ async function persist(run: StoredRun, testMode: boolean): Promise<void> {
   await pool.query(
     `UPDATE tailoring_runs
        SET status=$2, stage=$3, progress=$4, result=$5, evaluation=$6,
-           metadata=$7, error=$8, cancel_requested=$9, updated_at=now()
+           metadata=$7, error=$8, cancel_requested=$9, started_at=$10, finished_at=$11, updated_at=now()
      WHERE id=$1`,
     [
       run.id,
@@ -98,7 +148,9 @@ async function persist(run: StoredRun, testMode: boolean): Promise<void> {
       run.evaluation ? JSON.stringify(run.evaluation) : null,
       run.cv?.pipeline ? JSON.stringify(run.cv.pipeline) : null,
       run.error,
-      run.cancelRequested
+      run.cancelRequested,
+      run.startedAt || null,
+      run.finishedAt || null
     ]
   );
 }
@@ -122,7 +174,8 @@ async function executeRun(
     run.status = "running";
     run.stage = "planning";
     run.progress = 5;
-    run.updatedAt = new Date().toISOString();
+    run.startedAt = new Date().toISOString();
+    run.updatedAt = run.startedAt;
     await persist(run, testMode);
     const generator = generatorFactory ? generatorFactory() : createGenerator(run.provider);
     const provider = providerStatus(run.provider);
@@ -148,7 +201,8 @@ async function executeRun(
     run.cv = cv;
     run.evaluation = cv.evaluation;
     run.request = undefined;
-    run.updatedAt = new Date().toISOString();
+    run.finishedAt = new Date().toISOString();
+    run.updatedAt = run.finishedAt;
     await persist(run, testMode);
     if (!testMode) await pool.query("UPDATE tailoring_runs SET request=NULL WHERE id=$1", [run.id]);
     const usageMeta = {
@@ -168,7 +222,8 @@ async function executeRun(
     run.status = cancelled ? "cancelled" : "failed";
     run.error = cancelled ? "Tailoring cancelled" : error instanceof Error ? error.message : String(error);
     if (!cancelled) console.error(`Tailoring run ${run.id} failed:`, error);
-    run.updatedAt = new Date().toISOString();
+    run.finishedAt = new Date().toISOString();
+    run.updatedAt = run.finishedAt;
     await persist(run, testMode);
     if (!testMode && run.usageEventId) {
       await releaseUsage(run.usageEventId).catch(() => undefined);
@@ -192,6 +247,10 @@ export async function createTailoringRun(input: {
   const request = { profile: input.profile, job: input.job };
   const key = idempotencyKey(input.userId, request);
   let run: StoredRun | null = null;
+  // Only a freshly created run or one reset from failed/cancelled needs to be
+  // (re-)scheduled; a run already queued/running/completed via idempotent
+  // reuse must not be pushed onto the queue a second time.
+  let needsSchedule = false;
 
   if (!input.testMode) {
     const { rows } = await pool.query(
@@ -201,6 +260,7 @@ export async function createTailoringRun(input: {
     if (rows[0]) {
       run = rowToRun(rows[0]);
       if (["failed", "cancelled"].includes(run.status)) {
+        needsSchedule = true;
         if ((input.freeMonthlyLimit || 0) > 0 && !run.usageEventId) {
           const reservation = await reserveTailor(input.userId, input.freeMonthlyLimit || 0);
           if (!reservation.ok) throw new Error("Monthly free limit reached. Upgrade to continue tailoring.");
@@ -230,6 +290,7 @@ export async function createTailoringRun(input: {
       idempotencyKey(candidate.userId, candidate.request) === key
     ) || null;
     if (run && ["failed", "cancelled"].includes(run.status)) {
+      needsSchedule = true;
       Object.assign(run, {
         provider: input.provider,
         request,
@@ -245,6 +306,7 @@ export async function createTailoringRun(input: {
   }
 
   if (!run) {
+    needsSchedule = true;
     const now = new Date().toISOString();
     run = {
       id: crypto.randomUUID(),
@@ -280,7 +342,7 @@ export async function createTailoringRun(input: {
       }
     }
   }
-  void executeRun(run, input.testMode, input.generatorFactory);
+  if (needsSchedule) enqueue({ run, testMode: input.testMode, generatorFactory: input.generatorFactory });
   return publicRun(run);
 }
 
@@ -323,6 +385,6 @@ export async function recoverTailoringRuns(): Promise<void> {
     run.error = "";
     run.cancelRequested = false;
     memoryRuns.set(run.id, run);
-    void executeRun(run, false);
+    enqueue({ run, testMode: false });
   }
 }

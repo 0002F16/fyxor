@@ -70,6 +70,8 @@ export type AdminRun = {
   provider: string;
   createdAt: string;
   updatedAt: string;
+  startedAt: string | null;
+  finishedAt: string | null;
   error: string;
 };
 
@@ -77,6 +79,27 @@ export type AdminUserDetail = {
   user: { id: string; email: string; name: string; createdAt: string };
   usage: { total: number; byAction: Record<string, number> };
   recentRuns: AdminRun[];
+};
+
+export type QueueStatus = {
+  queued: number;
+  running: number;
+  globalMax: number;
+  perUserMax: number;
+  runningByUser: Array<{ userId: string; email: string; running: number; queued: number }>;
+};
+
+export type Health = {
+  ok: boolean;
+  load: {
+    queued: number;
+    running: number;
+    globalMax: number;
+    perUserMax: number;
+    uptimeSec: number;
+    memoryMb: { rss: number; heapUsed: number };
+    db: { total: number; idle: number; waiting: number };
+  };
 };
 
 export async function signIn(email: string, password: string): Promise<{ email: string }> {
@@ -99,5 +122,7 @@ export const adminApi = {
   summary: () => request<AdminSummary>("/api/admin/summary"),
   users: (search?: string) =>
     request<{ users: AdminUser[] }>(`/api/admin/users${search ? `?search=${encodeURIComponent(search)}` : ""}`),
-  userDetail: (id: string) => request<AdminUserDetail>(`/api/admin/users/${encodeURIComponent(id)}`)
+  userDetail: (id: string) => request<AdminUserDetail>(`/api/admin/users/${encodeURIComponent(id)}`),
+  queueStatus: () => request<QueueStatus>("/api/admin/queue-status"),
+  health: () => request<Health>("/health")
 };

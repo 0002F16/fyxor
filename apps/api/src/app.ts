@@ -19,6 +19,7 @@ import {
   listUsers,
   monthlyUsage,
   pool,
+  queueStatus,
   recordUsage,
   releaseUsage,
   reserveTailor,
@@ -40,7 +41,7 @@ import { makeDocx, makePdfWithAudit } from "./export.js";
 import { cccStatus, isCccAvailable, runCccEngine } from "./cccEngine.js";
 import { reviewExperienceTitles } from "./titleReview.js";
 import { generateUnifiedCv, PIPELINE_VERSION, regenerateUnifiedSection } from "./unifiedPipeline.js";
-import { cancelTailoringRun, createTailoringRun, getTailoringRun } from "./tailoringRuns.js";
+import { cancelTailoringRun, createTailoringRun, getTailoringRun, schedulerStatus } from "./tailoringRuns.js";
 import { evaluateTailoredCv } from "./resumeEval.js";
 
 const asyncRoute = (fn: express.RequestHandler): express.RequestHandler =>
@@ -161,12 +162,19 @@ export function createApp(generatorFactory?: () => Generator) {
 
   app.get("/health", (req, res) => {
     const status = providerStatus(resolveProvider(req.query.provider || req.header("x-ai-provider") || process.env.AI_PROVIDER));
+    const mem = process.memoryUsage();
     res.json({
       ok: true,
       ...status,
       configured: generatorFactory ? true : status.configured,
       pipeline: { version: PIPELINE_VERSION, legacyEnabled: process.env.ENABLE_LEGACY_ENGINES === "true" },
-      ccc: cccStatus()
+      ccc: cccStatus(),
+      load: {
+        ...schedulerStatus(),
+        uptimeSec: Math.round(process.uptime()),
+        memoryMb: { rss: Math.round(mem.rss / 1e6), heapUsed: Math.round(mem.heapUsed / 1e6) },
+        db: { total: pool.totalCount, idle: pool.idleCount, waiting: pool.waitingCount }
+      }
     });
   });
 
@@ -455,6 +463,10 @@ export function createApp(generatorFactory?: () => Generator) {
 
   app.get("/api/admin/summary", requireAdmin, asyncRoute(async (_req, res) => {
     res.json(await adminUsageSummary());
+  }));
+
+  app.get("/api/admin/queue-status", requireAdmin, asyncRoute(async (_req, res) => {
+    res.json({ ...(await queueStatus()), ...schedulerStatus() });
   }));
 
   app.get("/api/admin/users", requireAdmin, asyncRoute(async (req, res) => {

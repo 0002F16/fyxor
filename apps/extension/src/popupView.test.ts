@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { emptyStorageState, makeId, tailoringJobKey, type BaseProfile, type JobDescription, type StorageState, type TailoringJob } from "@cv-tailor/shared";
-import { activeTailoringFor, selectPopupView } from "./popupView";
+import { activeTailoringFor, activeTailoringForJobs, selectPopupView } from "./popupView";
 
 const profile = (): BaseProfile => ({
   id: makeId("profile"), contact: { name: "", email: "", phone: "", location: "", linkedIn: "" },
@@ -77,5 +77,30 @@ describe("activeTailoringFor", () => {
   it("keeps the just-finished slot visible when no job is selected (happy path)", () => {
     const tj = doneFor(jobA());
     expect(activeTailoringFor(tj, null)).toBe(tj);
+  });
+});
+
+describe("activeTailoringForJobs", () => {
+  const jobA = (): JobDescription => ({ title: "Engineer", company: "Acme", location: "", description: "x".repeat(40), url: "https://jobs/a", source: "manual" });
+  const jobB = (): JobDescription => ({ title: "Designer", company: "Globex", location: "", description: "y".repeat(40), url: "https://jobs/b", source: "manual" });
+  const runFor = (j: JobDescription, startedAt: number): TailoringJob => ({ status: "running", error: "", cvId: "", runId: "run", stage: "planning", progress: 20, jobKey: tailoringJobKey(j), startedAt });
+
+  it("returns null when the map has no entry for the job on screen", () => {
+    expect(activeTailoringForJobs({}, jobA())).toBeNull();
+  });
+
+  it("looks up the run keyed by the job on screen among several tracked jobs", () => {
+    const a = runFor(jobA(), 1);
+    const b = runFor(jobB(), 2);
+    const jobs = { [tailoringJobKey(jobA())]: a, [tailoringJobKey(jobB())]: b };
+    expect(activeTailoringForJobs(jobs, jobA())).toBe(a);
+    expect(activeTailoringForJobs(jobs, jobB())).toBe(b);
+  });
+
+  it("surfaces the most recently started job when no job is selected", () => {
+    const a = runFor(jobA(), 1);
+    const b = runFor(jobB(), 2);
+    const jobs = { [tailoringJobKey(jobA())]: a, [tailoringJobKey(jobB())]: b };
+    expect(activeTailoringForJobs(jobs, null)).toBe(b);
   });
 });

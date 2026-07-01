@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { LogOut, RefreshCw, Search, Users, Zap, History } from "lucide-react";
+import { Activity, LogOut, RefreshCw, Search, Users, Zap, History } from "lucide-react";
 import {
   adminApi,
   ApiError,
@@ -9,12 +9,26 @@ import {
   type AdminRun,
   type AdminSummary,
   type AdminUser,
-  type AdminUserDetail
+  type AdminUserDetail,
+  type Health,
+  type QueueStatus
 } from "./api";
 
 function fmtDate(iso: string): string {
   const d = new Date(iso);
   return Number.isNaN(d.getTime()) ? "—" : d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+}
+
+// Compact "2m 30s" duration for run timing; falls back to "—" when either end
+// is missing (e.g. a run still queued has no startedAt yet).
+function fmtDuration(startIso: string | null, endIso: string | null): string {
+  if (!startIso || !endIso) return "—";
+  const ms = new Date(endIso).getTime() - new Date(startIso).getTime();
+  if (!Number.isFinite(ms) || ms < 0) return "—";
+  const totalSec = Math.round(ms / 1000);
+  const min = Math.floor(totalSec / 60);
+  const sec = totalSec % 60;
+  return min > 0 ? `${min}m ${sec}s` : `${sec}s`;
 }
 
 export function App() {
@@ -124,6 +138,8 @@ function Dashboard({ onSignOut }: { onSignOut: () => void }) {
         <StatCard icon={<History size={18} />} label="Tailors all-time" value={summary?.tailorsAllTime} />
       </div>
 
+      <LiveLoadCard onAuthLost={onSignOut} />
+
       <div className="card">
         <div className="mb-4 flex items-center gap-2">
           <div className="relative flex-1">
@@ -194,6 +210,78 @@ function StatCard({ icon, label, value }: { icon: React.ReactNode; label: string
   );
 }
 
+// Concurrency + VPS load at a glance: queued/running counts against the
+// scheduler's caps, plus memory and DB pool pressure, polled every 5s so
+// admins can spot a backed-up queue without opening a terminal.
+function LiveLoadCard({ onAuthLost }: { onAuthLost: () => void }) {
+  const [queue, setQueue] = useState<QueueStatus | null>(null);
+  const [health, setHealth] = useState<Health | null>(null);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const [q, h] = await Promise.all([adminApi.queueStatus(), adminApi.health()]);
+        if (cancelled) return;
+        setQueue(q);
+        setHealth(h);
+        setError("");
+      } catch (err) {
+        if (cancelled) return;
+        if (err instanceof ApiError && (err.status === 401 || err.status === 403)) return onAuthLost();
+        setError(err instanceof Error ? err.message : "Failed to load live status.");
+      }
+    };
+    void poll();
+    const timer = setInterval(poll, 5000);
+    return () => { cancelled = true; clearInterval(timer); };
+  }, [onAuthLost]);
+
+  return (
+    <div className="card mb-6">
+      <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-ink">
+        <Activity size={16} /> Live load
+      </div>
+      {error ? (
+        <p className="text-sm text-rose-600">{error}</p>
+      ) : !queue || !health ? (
+        <p className="text-sm text-muted">Loading…</p>
+      ) : (
+        <>
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <LoadStat label="Running" value={`${queue.running} / ${queue.globalMax}`} />
+            <LoadStat label="Queued" value={queue.queued} />
+            <LoadStat label="Memory (RSS)" value={`${health.load.memoryMb.rss} MB`} />
+            <LoadStat label="DB pool waiting" value={health.load.db.waiting} />
+          </div>
+          {queue.runningByUser.length > 0 && (
+            <div className="mt-4">
+              <h4 className="mb-1.5 text-xs uppercase tracking-wide text-muted">Busiest users right now</h4>
+              <div className="flex flex-wrap gap-2">
+                {queue.runningByUser.map((u) => (
+                  <span key={u.userId} className="chip">
+                    {u.email}: {u.running} running{u.queued ? `, ${u.queued} queued` : ""}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+function LoadStat({ label, value }: { label: string; value: string | number }) {
+  return (
+    <div>
+      <div className="text-xs uppercase tracking-wide text-muted">{label}</div>
+      <div className="text-lg font-bold tabular-nums text-ink">{value}</div>
+    </div>
+  );
+}
+
 function UserDetailModal({ userId, onClose, onAuthLost }: { userId: string; onClose: () => void; onAuthLost: () => void }) {
   const [detail, setDetail] = useState<AdminUserDetail | null>(null);
   const [error, setError] = useState("");
@@ -235,14 +323,26 @@ function UserDetailModal({ userId, onClose, onAuthLost }: { userId: string; onCl
               {detail.usage.total === 0 && <span className="text-sm text-muted">No activity this month.</span>}
             </div>
 
-            <h3 className="label">Recent tailoring runs</h3>
-            {detail.recentRuns.length === 0 ? (
-              <p className="text-sm text-muted">No runs yet.</p>
-            ) : (
-              <div className="space-y-1.5">
-                {detail.recentRuns.map((r) => <RunRow key={r.id} run={r} />)}
-              </div>
-            )}
+            {(() => {
+              const inProgress = detail.recentRuns.filter((r) => r.status === "queued" || r.status === "running");
+              const recent = detail.recentRuns.filter((r) => r.status !== "queued" && r.status !== "running");
+              return <>
+                {inProgress.length > 0 && <>
+                  <h3 className="label">In progress</h3>
+                  <div className="mb-5 space-y-1.5">
+                    {inProgress.map((r) => <RunRow key={r.id} run={r} />)}
+                  </div>
+                </>}
+                <h3 className="label">Recent tailoring runs</h3>
+                {recent.length === 0 ? (
+                  <p className="text-sm text-muted">No runs yet.</p>
+                ) : (
+                  <div className="space-y-1.5">
+                    {recent.map((r) => <RunRow key={r.id} run={r} />)}
+                  </div>
+                )}
+              </>;
+            })()}
           </>
         )}
       </div>
@@ -251,12 +351,14 @@ function UserDetailModal({ userId, onClose, onAuthLost }: { userId: string; onCl
 }
 
 function RunRow({ run }: { run: AdminRun }) {
+  const duration = fmtDuration(run.startedAt, run.finishedAt || (run.status === "running" ? new Date().toISOString() : null));
   return (
     <div className="flex items-center justify-between rounded-lg border border-line/60 px-3 py-2 text-sm">
       <div className="flex items-center gap-2">
         <span className={`run-pill run-${run.status}`}>{run.status}</span>
         <span className="text-muted">{run.stage}</span>
         <span className="text-xs text-muted">· {run.provider}</span>
+        {duration !== "—" && <span className="text-xs text-muted">· {duration}</span>}
       </div>
       <div className="text-right">
         <div className="text-xs text-muted">{new Date(run.updatedAt).toLocaleString()}</div>

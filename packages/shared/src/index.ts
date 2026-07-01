@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-export const aiProviderSchema = z.enum(["deepseek-api", "codex-local", "openai-api", "gemini-api", "groq-api"]);
+export const aiProviderSchema = z.enum(["deepseek-api"]);
 export const tailoringEngineSchema = z.enum(["builtin", "ccc"]);
 export const evidenceStatusSchema = z.enum(["verified", "needs-review", "stale", "unsupported", "legacy-unverified"]);
 export const skillProvenanceSchema = z.enum(["explicit", "equivalent", "inferred-baseline"]);
@@ -406,7 +406,7 @@ export const syncPayloadSchema = z.object({
 });
 
 export const tailoringJobSchema = z.object({
-  status: z.enum(["running", "done", "error"]),
+  status: z.enum(["queued", "running", "done", "error"]),
   error: z.string().default(""),
   cvId: z.string().default(""),
   runId: z.string().default(""),
@@ -441,11 +441,17 @@ export const storageStateSchema = z.object({
   applications: z.array(applicationRecordSchema),
   resumeVariants: z.array(tailoredCvSchema).default([]),
   pendingJob: jobDescriptionSchema.nullable().default(null),
+  // Deprecated single-run slot, kept parseable for one migration cycle.
+  // `migrateStorage` folds it into `tailoringJobs` and clears it. New code
+  // should read/write `tailoringJobs` (keyed by `tailoringJobKey`) instead.
   tailoringJob: tailoringJobSchema.nullable().default(null),
+  // Up to a few simultaneous tailoring runs, keyed by `tailoringJobKey(job)` so
+  // each posting has at most one in-flight run.
+  tailoringJobs: z.record(tailoringJobSchema).default({}),
   auth: authSessionSchema.nullable().default(null),
   settings: z.object({
     apiBaseUrl: z.string().default("https://api-76-13-177-250.sslip.io"),
-    aiProvider: aiProviderSchema.default("deepseek-api"),
+    aiProvider: aiProviderSchema.catch("deepseek-api").default("deepseek-api"),
     providerDefaultMigrated: z.boolean().default(false),
     tailoringEngine: tailoringEngineSchema.default("builtin"),
     onboardingComplete: z.boolean().default(false),
@@ -497,6 +503,7 @@ export const emptyStorageState = (): StorageState => ({
   resumeVariants: [],
   pendingJob: null,
   tailoringJob: null,
+  tailoringJobs: {},
   auth: null,
   settings: {
     apiBaseUrl: "https://api-76-13-177-250.sslip.io",
@@ -526,6 +533,12 @@ export function migrateStorage(input: unknown): StorageState {
   // values parseable for compatibility, then normalize them on load.
   state.settings.aiProvider = "deepseek-api";
   state.settings.providerDefaultMigrated = true;
+  // Fold the old single-run slot into the multi-run map so a job in flight
+  // when the extension updates isn't dropped, then clear the deprecated slot.
+  if (state.tailoringJob && Object.keys(state.tailoringJobs).length === 0 && state.tailoringJob.jobKey) {
+    state.tailoringJobs = { ...state.tailoringJobs, [state.tailoringJob.jobKey]: state.tailoringJob };
+  }
+  state.tailoringJob = null;
   return state;
 }
 
@@ -580,6 +593,15 @@ export function tailoringJobKey(job: { url?: string; title?: string; company?: s
   const url = (job.url || "").trim();
   if (url) return url;
   return `${(job.title || "").trim()}@@${(job.company || "").trim()}`;
+}
+
+// The runs still in flight (queued or running) across all jobs, newest first —
+// used to render the stacked progress cards and to gate "start another tailor"
+// against the per-user concurrent cap.
+export function activeTailoringJobs(state: Pick<StorageState, "tailoringJobs">): TailoringJob[] {
+  return Object.values(state.tailoringJobs)
+    .filter((job) => job.status === "queued" || job.status === "running")
+    .sort((a, b) => b.startedAt - a.startedAt);
 }
 
 // Skills are stored two ways: `skillCategories` ({ theme: entries[] }) for themed

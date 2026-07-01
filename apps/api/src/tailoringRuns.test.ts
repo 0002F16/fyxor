@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { BaseProfile, JobDescription } from "@cv-tailor/shared";
 import type { Generator } from "./openai";
-import { cancelTailoringRun, createTailoringRun, getTailoringRun } from "./tailoringRuns";
+import { cancelTailoringRun, createTailoringRun, getTailoringRun, schedulerStatus } from "./tailoringRuns";
 
 const profile: BaseProfile = {
   id: "run-profile",
@@ -64,8 +64,8 @@ describe("tailoring runs", () => {
     };
     const generate = vi.fn(async ({ name }: { name: string }) => byName[name]) as unknown as Generator["generate"];
     const factory = () => ({ generate });
-    const first = await createTailoringRun({ userId: "run-user", provider: "gemini-api", profile, job, testMode: true, generatorFactory: factory });
-    const duplicate = await createTailoringRun({ userId: "run-user", provider: "gemini-api", profile, job, testMode: true, generatorFactory: factory });
+    const first = await createTailoringRun({ userId: "run-user", provider: "deepseek-api", profile, job, testMode: true, generatorFactory: factory });
+    const duplicate = await createTailoringRun({ userId: "run-user", provider: "deepseek-api", profile, job, testMode: true, generatorFactory: factory });
     expect(duplicate.id).toBe(first.id);
 
     let current = await getTailoringRun(first.id, "run-user", true);
@@ -87,7 +87,7 @@ describe("tailoring runs", () => {
     }) as unknown as Generator["generate"];
     const run = await createTailoringRun({
       userId: "cancel-user",
-      provider: "gemini-api",
+      provider: "deepseek-api",
       profile: { ...profile, id: "cancel-profile" },
       job: { ...job, url: "https://example.com/cancel" },
       testMode: true,
@@ -103,5 +103,66 @@ describe("tailoring runs", () => {
     }
     expect(current?.status).toBe("cancelled");
     expect(generate).toHaveBeenCalledTimes(1);
+  });
+
+  it("caps a single user at the per-user concurrent limit and drains the queue as runs finish", async () => {
+    // Four distinct jobs for the same user, each blocked on its own gate so we
+    // control exactly when a "running" slot frees up.
+    const gates = [0, 1, 2, 3].map(() => {
+      let release!: () => void;
+      const wait = new Promise<void>((resolve) => { release = resolve; });
+      return { wait, release };
+    });
+    const [gateA, gateB, gateC, gateD] = gates;
+    const runs = await Promise.all(
+      gates.map((gate, i) => {
+        const generate = vi.fn(async () => {
+          await gate.wait;
+          return plan;
+        }) as unknown as Generator["generate"];
+        return createTailoringRun({
+          userId: "cap-user",
+          provider: "deepseek-api",
+          profile: { ...profile, id: `cap-profile-${i}` },
+          job: { ...job, url: `https://example.com/cap-${i}` },
+          testMode: true,
+          generatorFactory: () => ({ generate })
+        });
+      })
+    );
+    const [runA, runB, runC, runD] = runs;
+
+    const statusOf = async (id: string) => (await getTailoringRun(id, "cap-user", true))?.status;
+    expect(await statusOf(runA!.id)).toBe("running");
+    expect(await statusOf(runB!.id)).toBe("running");
+    expect(await statusOf(runC!.id)).toBe("running");
+    // The 4th exceeds the default per-user cap (3) and stays queued instead of
+    // starting its LLM calls.
+    expect(await statusOf(runD!.id)).toBe("queued");
+    expect(schedulerStatus().running).toBeGreaterThanOrEqual(3);
+
+    // Freeing one running slot should let the queued run start.
+    gateA!.release();
+    let fourthStatus = await statusOf(runD!.id);
+    for (let i = 0; i < 50 && fourthStatus !== "running"; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      fourthStatus = await statusOf(runD!.id);
+    }
+    expect(fourthStatus).toBe("running");
+
+    // Let the rest settle (the mock returns a plan-shaped payload for every
+    // call name, so later pipeline stages may reject it — this test only
+    // cares that the scheduler drains the queue, not full pipeline success).
+    gateB!.release();
+    gateC!.release();
+    gateD!.release();
+    for (const run of runs) {
+      let current = await statusOf(run.id);
+      for (let i = 0; i < 50 && (current === "running" || current === "queued"); i += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        current = await statusOf(run.id);
+      }
+      expect(["completed", "failed"]).toContain(current);
+    }
   });
 });
