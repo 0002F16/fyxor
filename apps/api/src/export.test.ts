@@ -13,6 +13,7 @@ const cv: TailoredCv = {
   education: [{ id: "ed1", school: "Uniwersytet Łódzki", degree: "Magister Zarządzania", location: "Łódź", graduationDate: "2015", gpa: "", honors: "", coursework: [] }],
   skills: ["Zarządzanie"], skillEvidence: [], skillCategories: {},
   certifications: ["PMP — Project Management Institute"], languages: [{ language: "Polski", level: "Native" }],
+  projects: [],
   sectionOrder: [],
   style: { preset: "garamond" },
   dismissedChecks: [],
@@ -37,6 +38,8 @@ describe("exports", () => {
     for (const text of [pdfResult.text, docxResult.value]) {
       const normalized = text.toLocaleLowerCase();
       expect(normalized).toContain("łukasz żółć");
+      expect(normalized).toContain("summary");
+      expect(normalized).not.toContain("profile");
       expect(normalized).toContain("kierownik");
       expect(normalized).toContain("ćma");
       expect(normalized).toContain("zarządzanie");

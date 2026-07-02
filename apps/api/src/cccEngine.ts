@@ -227,6 +227,7 @@ export function mapResumeToTailoredCv(resume: CccResume, profile: BaseProfile, j
     languages: (resume.languages && resume.languages.length
       ? resume.languages.map((l) => ({ language: l.language || "", level: l.level || "" }))
       : profile.languages),
+    projects: profile.projects ?? [],
     sectionOrder: profile.sectionOrder ?? [],
     style: profile.style,
     dismissedChecks: [],

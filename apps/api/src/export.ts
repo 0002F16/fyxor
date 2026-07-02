@@ -138,12 +138,22 @@ function cvSections(cv: TailoredCv): Section[] {
     .map(([name, entries]) => ({ name, entries: entries.filter(Boolean).join(", ") }))
     .filter((c) => c.entries);
   const byId: Record<SectionId, Section[]> = {
-    summary: [{ heading: "Profile", lines: [cv.summary] }],
+    summary: [{ heading: "Summary", lines: [cv.summary] }],
     experience: cv.experiences.map((exp) => ({
       heading: exp.role,
       lines: exp.bullets.map(bulletText),
       meta: [exp.company, [exp.startDate, exp.endDate].filter(Boolean).join(" – ")].filter(Boolean).join("  ·  ")
     })),
+    projects: (cv.projects ?? [])
+      .filter((project) => project.title.trim())
+      .map((project) => ({
+        heading: project.title,
+        meta: project.description || undefined,
+        lines: [
+          ...project.bullets.filter(Boolean),
+          project.technologies.filter(Boolean).length ? `Technologies: ${project.technologies.filter(Boolean).join(", ")}` : ""
+        ].filter(Boolean)
+      })),
     skills: [{ heading: "Skills", lines: [], categories: skillCategories }],
     certifications: cv.certifications.length ? [{ heading: "Certifications", lines: cv.certifications }] : [],
     languages: languageLine ? [{ heading: "Languages", lines: [languageLine] }] : [],
@@ -269,7 +279,7 @@ export async function makeDocx(cv: TailoredCv): Promise<Buffer> {
       continue;
     }
 
-    const isBulleted = section.heading !== "Profile"
+    const isBulleted = section.heading !== "Summary"
       && section.heading !== "Skills"
       && section.heading !== "Languages"
       && section.heading !== "Education";
