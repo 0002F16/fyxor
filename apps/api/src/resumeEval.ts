@@ -34,6 +34,16 @@ const GENERIC_PHRASES = [
   "hardworking",
   "team player"
 ];
+const SUMMARY_GENERIC_PHRASES = [
+  ...GENERIC_PHRASES,
+  "excellent communication skills",
+  "strong communication skills",
+  "detail-oriented",
+  "detail oriented",
+  "proactive attitude",
+  "ability to multitask",
+  "fast learner"
+];
 const WORD_RE = /[\p{L}\p{N}][\p{L}\p{N}+#.&/%'-]*/gu;
 const NUMBER_RE = /(?<![\p{L}\p{N}])(?:[$€£]\s*)?\d+(?:[.,]\d+)*(?:\s*[%x×+])?(?![\p{L}\p{N}])/gu;
 
@@ -49,6 +59,13 @@ function words(value: string): string[] {
   return plain(value).match(WORD_RE) ?? [];
 }
 
+function textOverlap(left: string, right: string): number {
+  const leftTokens = new Set(normalized(left).split(" ").filter((token) => token.length > 2));
+  if (!leftTokens.size) return 0;
+  const rightTokens = new Set(normalized(right).split(" ").filter((token) => token.length > 2));
+  return [...leftTokens].filter((token) => rightTokens.has(token)).length / leftTokens.size;
+}
+
 function numberTokens(value: string): string[] {
   return (plain(value).match(NUMBER_RE) ?? []).map((token) => token.replace(/\s+/g, "").toLocaleLowerCase());
 }
@@ -57,6 +74,43 @@ function sentenceCount(value: string): number {
   const text = plain(value);
   if (!text) return 0;
   return text.split(/[.!?]+(?:\s|$)/).filter((part) => part.trim()).length || 1;
+}
+
+function parseYear(value: string): number | undefined {
+  const match = value.match(/\b(19|20)\d{2}\b/);
+  return match ? Number(match[0]) : undefined;
+}
+
+function supportedExperienceYears(profile: BaseProfile): number | undefined {
+  const currentYear = new Date().getFullYear();
+  const spans = profile.experiences.flatMap((role) => {
+    const start = parseYear(role.startDate);
+    if (!start) return [];
+    const end = /\b(present|current|now)\b/i.test(role.endDate) ? currentYear : parseYear(role.endDate);
+    if (!end || end < start) return [];
+    return [{ start, end }];
+  });
+  if (!spans.length) return undefined;
+  return Math.max(0, Math.max(...spans.map((span) => span.end)) - Math.min(...spans.map((span) => span.start)));
+}
+
+function jobRequestsExperienceYears(job: JobDescription): boolean {
+  return /\b(?:\d+\+?\s*(?:-|to)?\s*)?(?:years?|yrs?)\s+(?:of\s+)?(?:relevant\s+)?(?:\w+\s+){0,4}experience\b/i
+    .test(`${job.title} ${job.description}`);
+}
+
+function summaryYearsClaimed(summary: string): number[] {
+  return [...plain(summary).matchAll(/\b(\d{1,2})\+?\s*(?:years?|yrs?)\b/gi)]
+    .map((match) => Number(match[1]))
+    .filter((value) => Number.isFinite(value));
+}
+
+function estimatedSummaryLines(summary: string): number {
+  const chars = plain(summary).length;
+  if (!chars) return 0;
+  // The rendered CV uses roughly a 602px text column at 12.5px. In practice this
+  // lands near 95-100 average characters per wrapped line; use the stricter side.
+  return Math.ceil(chars / 95);
 }
 
 function skillSupported(skill: string, profile: BaseProfile): boolean {
@@ -196,6 +250,8 @@ export function evaluateTailoredCv(profile: BaseProfile, job: JobDescription, cv
   ));
 
   const sourceNumbers = new Set(numberTokens(sourceText));
+  const supportedYears = supportedExperienceYears(profile);
+  if (supportedYears !== undefined && supportedYears >= 2) sourceNumbers.add(String(supportedYears));
   const unsupportedNumbers = Array.from(new Set(numberTokens(outputText).filter((token) => !sourceNumbers.has(token))));
   checks.push(check(
     "unsupported-numbers",
@@ -301,6 +357,133 @@ export function evaluateTailoredCv(profile: BaseProfile, job: JobDescription, cv
         ? "The existing summary already satisfies the target blueprint."
         : "The summary is materially tailored to the target blueprint.",
     3
+  ));
+
+  const summaryText = plain(cv.summary);
+  const summaryLower = summaryText.toLocaleLowerCase();
+  const summaryWordCount = words(cv.summary).length;
+  const estimatedLines = estimatedSummaryLines(cv.summary);
+  checks.push(check(
+    "summary-visual-compactness",
+    "readability",
+    estimatedLines > 4 || summaryWordCount > 70 ? "warn" : "pass",
+    "Summary fits the intended 3-4 rendered lines",
+    `Estimated summary length is ${estimatedLines} rendered line(s) and ${summaryWordCount} words.`,
+    2
+  ));
+
+  const claimedYears = summaryYearsClaimed(cv.summary);
+  const unsupportedYoe = claimedYears.filter((years) => !supportedYears || supportedYears < 2 || years > supportedYears);
+  checks.push(check(
+    "summary-yoe-support",
+    "truthfulness",
+    unsupportedYoe.length ? "fail" : "pass",
+    "Years of experience are supported",
+    unsupportedYoe.length
+      ? `Unsupported or inflated YoE claim(s): ${unsupportedYoe.join(", ")} year(s).`
+      : claimedYears.length
+        ? `YoE claim is supported by profile dates (${supportedYears} year(s)).`
+        : "No YoE claim requiring support appears in the summary.",
+    3
+  ));
+
+  const shouldMentionYoe = jobRequestsExperienceYears(job) && Boolean(supportedYears && supportedYears >= 2);
+  checks.push(check(
+    "summary-yielded-yoe",
+    "relevance",
+    shouldMentionYoe && !claimedYears.length ? "warn" : "pass",
+    "JD-requested YoE is surfaced when supported",
+    shouldMentionYoe && !claimedYears.length
+      ? `The job asks for years of experience and ${supportedYears} supported year(s) are available, but the summary omits YoE.`
+      : shouldMentionYoe
+        ? "Supported JD-requested YoE appears in the summary."
+        : "The job does not require a supported YoE mention.",
+    1
+  ));
+
+  const archetype = blueprint?.archetype;
+  const careerShiftOverclaim = archetype === "career-shifter" && normalized(cv.summary).startsWith(normalized(job.title));
+  const seniorTooToolHeavy = archetype === "senior" &&
+    (blueprint?.mustUseKeywords || []).filter((keyword) => normalized(cv.summary).includes(normalized(keyword))).length > 5 &&
+    !/\b(lead|led|own|ownership|strategy|strategic|team|stakeholder|scope|senior|manager|director)\b/i.test(cv.summary);
+  checks.push(check(
+    "summary-archetype-fit",
+    "appropriateness",
+    careerShiftOverclaim || seniorTooToolHeavy ? "warn" : "pass",
+    "Summary framing matches candidate archetype",
+    careerShiftOverclaim
+      ? "Career-shifter summary opens as the target title instead of proven-background transition framing."
+      : seniorTooToolHeavy
+        ? "Senior summary appears tool-heavy without scope, leadership, or ownership framing."
+        : archetype
+          ? `Summary framing is acceptable for ${archetype}.`
+          : "No summary archetype was supplied; skipped archetype-specific framing review.",
+    2
+  ));
+
+  const mustUseKeywords = blueprint?.mustUseKeywords || [];
+  const missingSummaryKeywords = mustUseKeywords.filter((keyword) => !normalized(cv.summary).includes(normalized(keyword)));
+  checks.push(check(
+    "summary-keyword-coverage",
+    "ats",
+    mustUseKeywords.length && missingSummaryKeywords.length / mustUseKeywords.length > 0.5 ? "warn" : "pass",
+    "Supported high-value JD keywords appear naturally",
+    mustUseKeywords.length
+      ? missingSummaryKeywords.length
+        ? `Missing supported summary keyword(s): ${missingSummaryKeywords.join(", ")}.`
+        : "All blueprint summary keywords appear in the summary."
+      : "No blueprint summary keywords were supplied.",
+    1
+  ));
+
+  const punctuationListiness = (summaryText.match(/[,;|/]/g) || []).length;
+  const keywordStuffing = punctuationListiness >= 8 ||
+    /\b(?:skills?|tools?|keywords?)\s*:\s*/i.test(summaryText) ||
+    sentenceCount(summaryText) <= 2 && punctuationListiness >= 6 && summaryWordCount < 55;
+  checks.push(check(
+    "summary-keyword-stuffing",
+    "readability",
+    keywordStuffing ? "warn" : "pass",
+    "Summary avoids keyword stuffing",
+    keywordStuffing ? "The summary reads like a dense list of terms rather than recruiter-facing prose." : "Summary reads as prose rather than a keyword list.",
+    1
+  ));
+
+  const proofPoints = blueprint?.proofPoints || cv.summaryClaims.map((claim) => claim.text);
+  const representedProofs = proofPoints.filter((point) =>
+    normalized(point).length && (normalized(cv.summary).includes(normalized(point)) || textOverlap(point, cv.summary) >= 0.45)
+  );
+  checks.push(check(
+    "summary-proof-density",
+    "relevance",
+    proofPoints.length >= 2 && representedProofs.length < 2 ? "warn" : "pass",
+    "Summary carries enough source-backed proof",
+    proofPoints.length >= 2
+      ? `${representedProofs.length} of ${proofPoints.length} planned proof point(s) are represented.`
+      : "Fewer than two proof points were planned; compact proof density check is not applicable.",
+    2
+  ));
+
+  const summaryGenericHits = SUMMARY_GENERIC_PHRASES.filter((phrase) => summaryLower.includes(phrase));
+  checks.push(check(
+    "summary-generic-filler",
+    "readability",
+    summaryGenericHits.length ? "warn" : "pass",
+    "Summary avoids generic filler",
+    summaryGenericHits.length ? `Generic summary phrase(s): ${summaryGenericHits.join(", ")}.` : "Summary avoids tracked generic filler phrases.",
+    1
+  ));
+
+  const openingSentence = summaryText.split(/(?<=[.!?])\s+/)[0] || summaryText;
+  const weakOpening = !/\b(api|report|reconcil|analysis|analyst|engineer|developer|manager|lead|financial|account|data|operations|compliance|recruit|customer|project|process|strategy|system|sap|excel|sql|typescript|python)\b/i
+    .test(openingSentence) && words(openingSentence).length >= 6;
+  checks.push(check(
+    "summary-line-value",
+    "relevance",
+    weakOpening ? "warn" : "pass",
+    "Opening line communicates role-relevant value",
+    weakOpening ? "The opening line lacks clear role-relevant value or domain signal." : "The opening line carries a role-relevant value signal.",
+    1
   ));
 
   const staleSkillEvidence = cv.skills.filter((skill) => {
@@ -431,9 +614,9 @@ export function evaluateTailoredCv(profile: BaseProfile, job: JobDescription, cv
   checks.push(check(
     "summary-length",
     "readability",
-    summaryWords >= 35 && summaryWords <= 100 ? "pass" : "warn",
+    summaryWords >= 30 && summaryWords <= 70 ? "pass" : "warn",
     "Summary is concise",
-    `Summary length is ${summaryWords} words; the review band is 35–100.`,
+    `Summary length is ${summaryWords} words; the compact review band is 30–70.`,
     1
   ));
 

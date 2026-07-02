@@ -5,6 +5,7 @@ export type SyntheticExpectation = {
   seniority: "junior" | "mid" | "senior" | "executive";
   jobFamily: string;
   positioningMode: "target-identity" | "adjacent-identity" | "transition" | "transferable" | "education-led" | "executive";
+  summaryArchetype: "aligned" | "career-shifter" | "senior" | "junior" | "thin-evidence";
   requiredSummaryTerms: string[];
   requiredAnyGroups?: string[][];
   forbiddenClaims: string[];
@@ -79,7 +80,7 @@ export const syntheticCases: SyntheticCase[] = [
       description: "Build TypeScript backend services, design APIs, work with PostgreSQL, and improve CI/CD reliability. Three years of backend delivery experience preferred."
     }),
     expectation: {
-      fit: "direct", seniority: "mid", jobFamily: "technical", positioningMode: "target-identity",
+      fit: "direct", seniority: "mid", jobFamily: "technical", positioningMode: "target-identity", summaryArchetype: "aligned",
       requiredSummaryTerms: ["TypeScript", "API"], requiredAnyGroups: [["CI/CD", "deployment"]],
       forbiddenClaims: ["Kubernetes", "managed engineers", "40%"], inferencePolicy: "none", pageTarget: "one"
     }
@@ -116,7 +117,7 @@ export const syntheticCases: SyntheticCase[] = [
       description: "Support payment processing, cash-flow forecasting, bank reconciliation, intercompany funding, treasury reporting, and banking-query resolution in an international team."
     }),
     expectation: {
-      fit: "adjacent", seniority: "junior", jobFamily: "finance", positioningMode: "adjacent-identity",
+      fit: "adjacent", seniority: "junior", jobFamily: "finance", positioningMode: "adjacent-identity", summaryArchetype: "aligned",
       requiredSummaryTerms: ["cash"], requiredAnyGroups: [["reconciliation", "payment"]],
       forbiddenClaims: ["worked as a Treasury Analyst", "treasury department experience"], inferencePolicy: "none", pageTarget: "one"
     }
@@ -153,7 +154,7 @@ export const syntheticCases: SyntheticCase[] = [
       description: "Review customer files, investigate unusual activity, maintain KYC evidence, escalate risk indicators, and support AML controls. Prior KYC experience is preferred but transferable investigation experience is considered."
     }),
     expectation: {
-      fit: "adjacent", seniority: "mid", jobFamily: "compliance", positioningMode: "transition",
+      fit: "adjacent", seniority: "mid", jobFamily: "compliance", positioningMode: "transition", summaryArchetype: "career-shifter",
       requiredSummaryTerms: ["investigat"], requiredAnyGroups: [["transition", "targeting", "seeking"], ["controls", "evidence"]],
       forbiddenClaims: ["experienced KYC/AML Analyst", "AML investigations for"], inferencePolicy: "none", pageTarget: "one"
     }
@@ -191,7 +192,7 @@ export const syntheticCases: SyntheticCase[] = [
       description: "Manage order-to-cash requests in SAP, resolve customer order issues, report backlog status, and communicate with Turkish customers. Turkish C1 and English B2 are required."
     }),
     expectation: {
-      fit: "direct", seniority: "junior", jobFamily: "operations", positioningMode: "target-identity",
+      fit: "direct", seniority: "junior", jobFamily: "operations", positioningMode: "target-identity", summaryArchetype: "aligned",
       requiredSummaryTerms: ["Turkish", "C1"], requiredAnyGroups: [["SAP", "order"]],
       forbiddenClaims: ["native Turkish"], inferencePolicy: "none", pageTarget: "one"
     }
@@ -229,7 +230,7 @@ export const syntheticCases: SyntheticCase[] = [
       description: "Prepare financial statements, reconciliations, and audit files under IFRS. Candidates should be ACCA part-qualified or actively progressing through ACCA examinations."
     }),
     expectation: {
-      fit: "direct", seniority: "junior", jobFamily: "finance", positioningMode: "target-identity",
+      fit: "direct", seniority: "junior", jobFamily: "finance", positioningMode: "target-identity", summaryArchetype: "aligned",
       requiredSummaryTerms: ["ACCA"], requiredAnyGroups: [["in progress", "progressing", "Applied Skills"]],
       forbiddenClaims: ["ACCA member", "fully qualified ACCA", "chartered accountant"], inferencePolicy: "none", pageTarget: "one"
     }
@@ -266,7 +267,7 @@ export const syntheticCases: SyntheticCase[] = [
       description: "Support healthcare commercial strategy through pricing, forecasting, market performance, customer profitability, and Power BI reporting. Healthcare-sector exposure is preferred."
     }),
     expectation: {
-      fit: "direct", seniority: "mid", jobFamily: "commercial", positioningMode: "target-identity",
+      fit: "direct", seniority: "mid", jobFamily: "commercial", positioningMode: "target-identity", summaryArchetype: "aligned",
       requiredSummaryTerms: ["pricing", "forecast"], forbiddenClaims: ["FDA", "clinical", "medical product launch"],
       inferencePolicy: "allow-with-warning", pageTarget: "one"
     }
@@ -303,7 +304,7 @@ export const syntheticCases: SyntheticCase[] = [
       description: "Clean and analyze datasets using Python, build Tableau dashboards, communicate findings, and apply statistical methods. Graduate and internship experience are welcome."
     }),
     expectation: {
-      fit: "direct", seniority: "junior", jobFamily: "data", positioningMode: "education-led",
+      fit: "direct", seniority: "junior", jobFamily: "data", positioningMode: "education-led", summaryArchetype: "junior",
       requiredSummaryTerms: ["Statistics", "Python"], requiredAnyGroups: [["Tableau", "dashboard"]],
       forbiddenClaims: ["3 years", "professional data analyst"], inferencePolicy: "none", pageTarget: "one"
     }
@@ -358,7 +359,7 @@ export const syntheticCases: SyntheticCase[] = [
       description: "Lead European commercial strategy, own regional P&L, accelerate profitable revenue growth, develop senior leaders, and manage strategic customer partnerships across multiple markets."
     }),
     expectation: {
-      fit: "direct", seniority: "executive", jobFamily: "commercial", positioningMode: "executive",
+      fit: "direct", seniority: "executive", jobFamily: "commercial", positioningMode: "executive", summaryArchetype: "senior",
       requiredSummaryTerms: ["€180M", "7"], requiredAnyGroups: [["22%", "revenue"], ["65", "team"]],
       forbiddenClaims: ["global P&L", "100 employees"], inferencePolicy: "none", pageTarget: "two"
     }
@@ -395,7 +396,7 @@ export const syntheticCases: SyntheticCase[] = [
       description: "Individual contributor role mapping business processes, gathering requirements, analyzing KPIs, identifying root causes, and recommending workflow improvements."
     }),
     expectation: {
-      fit: "adjacent", seniority: "senior", jobFamily: "business-analysis", positioningMode: "transition",
+      fit: "adjacent", seniority: "senior", jobFamily: "business-analysis", positioningMode: "transition", summaryArchetype: "senior",
       requiredSummaryTerms: ["process"], requiredAnyGroups: [["KPI", "analysis"], ["21%", "workflow"]],
       forbiddenClaims: ["seeking a management role", "Business Analysis Manager"], inferencePolicy: "none", pageTarget: "one"
     }
@@ -432,7 +433,7 @@ export const syntheticCases: SyntheticCase[] = [
       description: "Coordinate project schedules, maintain action logs, prepare status updates, track risks, and support project meetings. Jira and formal project experience are preferred."
     }),
     expectation: {
-      fit: "stretch", seniority: "junior", jobFamily: "project-management", positioningMode: "transferable",
+      fit: "stretch", seniority: "junior", jobFamily: "project-management", positioningMode: "transferable", summaryArchetype: "thin-evidence",
       requiredSummaryTerms: ["coordinat"], requiredAnyGroups: [["schedule", "checklist"]],
       forbiddenClaims: ["Project Coordinator with", "Jira", "project risk management"], inferencePolicy: "none", pageTarget: "one"
     }
@@ -470,7 +471,7 @@ export const syntheticCases: SyntheticCase[] = [
       description: "Prepare forecasts, variance analysis, reconciliations, and management reporting. Applicants must already have unrestricted authorization to work in Poland; sponsorship is not available."
     }),
     expectation: {
-      fit: "direct", seniority: "mid", jobFamily: "finance", positioningMode: "target-identity",
+      fit: "direct", seniority: "mid", jobFamily: "finance", positioningMode: "target-identity", summaryArchetype: "aligned",
       requiredSummaryTerms: ["Poland", "without sponsorship"], requiredAnyGroups: [["forecast", "variance"]],
       forbiddenClaims: ["Polish citizen"], inferencePolicy: "none", pageTarget: "one"
     }
@@ -507,7 +508,7 @@ export const syntheticCases: SyntheticCase[] = [
       description: "Monitor SIEM alerts, investigate endpoint and cloud incidents, maintain incident-response playbooks, tune detection rules, and document security cases for audit."
     }),
     expectation: {
-      fit: "direct", seniority: "mid", jobFamily: "cybersecurity", positioningMode: "target-identity",
+      fit: "direct", seniority: "mid", jobFamily: "cybersecurity", positioningMode: "target-identity", summaryArchetype: "aligned",
       requiredSummaryTerms: ["SIEM", "incident"], requiredAnyGroups: [["28%", "detection"]],
       forbiddenClaims: ["managed a SOC", "CISSP"], inferencePolicy: "none", pageTarget: "one"
     }

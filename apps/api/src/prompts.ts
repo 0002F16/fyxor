@@ -84,10 +84,18 @@ write final summary sentences or final bullets.
 For every requirement, classify its type, hiring importance, summary value, and coverage as explicit,
 supported-equivalent, inferred-baseline, or unsupported. Include supporting source skills, bullet evidence, and any relevant
 summary evidence from languages, certifications, education, employers, titles, projects, or work authorization.
-Create a summary blueprint with function, industry, seniority, and evidence fit plus one positioning mode:
-target identity, adjacent identity, transition, transferable, education-led, or executive. Use target identity only when
-the candidate already performs substantially equivalent work. For a functional career change, lead with the proven
+Create a compact HR-natural summary blueprint with function, industry, seniority, and evidence fit plus one positioning
+mode: target identity, adjacent identity, transition, transferable, education-led, or executive. Use target identity only
+when the candidate already performs substantially equivalent work. For a functional career change, lead with the proven
 background and explicitly frame the transition.
+Also populate optional summaryBlueprint guidance when useful:
+- archetype: aligned, career-shifter, senior, junior, or thin-evidence.
+- openingFrame: how the first resume line should position the candidate without writing final prose.
+- mustUseKeywords: 3-7 exact job keywords to include naturally, only when supported by the profile.
+- proofPoints: 2-4 source-backed facts worth surfacing in a compact summary.
+- mustAvoidClaims: unsupported title, seniority, YoE, tools, industries, or metrics the writer must not imply.
+- includeYearsOfExperience: include true only when the JD asks for years of experience or the profile supports 2+ years;
+  otherwise include false with a short reason.
 Identify the job's headline qualifications and required competencies and make the most important ones the summary's focus.
 Prioritize the role's core FUNCTIONAL responsibilities and named domain methods, processes, and terminology (what the role
 actually does day to day — e.g. Know Your Customer (KYC), Customer Due Diligence (CDD), sanctions and PEP screening,
@@ -111,38 +119,42 @@ systems, process improvement, quantified outcomes, and stakeholder evidence rele
 // The single source of truth for how a tailored summary must read. Shared by the
 // per-section summary writer (initial tailor) and the combined writer used by the
 // regenerate path, so "Tailor to role" and the section "Regenerate" button stay in
-// lockstep: 3 sentences, 40-55 words, ATS-keyword-first, value-led opener.
-export const summaryRules = `Write exactly 3 short sentences totalling 40-55 words that make this candidate read as an obvious, qualified fit. This
-length is a hard requirement: a terse one-liner or a run of short fragments (e.g. "Strong analytical skills. Excellent
-communication skills.") is a failure. Lead with value ALWAYS: the opening words must immediately show the candidate's
-role-relevant value, not a bland label or filler.
+// lockstep: compact, HR-natural, ATS-aware, value-led opener.
+export const summaryRules = `Write one compact professional summary paragraph that targets 3-4 rendered resume lines. Use 40-65 words as the normal
+backend proxy, and only go shorter when evidence is genuinely thin. Do not pad. Prefer 2-3 natural sentences; sentence
+count is not the goal. The opening words must immediately show role-relevant value, not a bland label or filler.
 
 Do NOT restate the job's generic soft-skill adjectives ("strong analytical skills", "excellent communication skills",
 "proactive attitude", "detail-oriented", "ability to multitask") as if they were the candidate's achievements. Prove those
 qualities implicitly through the candidate's real domain experience, and spend the words on the role's actual work and
 terminology instead.
 
-ATS — this is the priority:
+ATS — important, but natural recruiter credibility comes first:
 - Pull the job description's exact keywords into the summary verbatim — hard skills, tools/systems, certifications, and the
   role title and competency phrases — so keyword-based ATS screening matches. Never paraphrase a JD keyword the candidate
   genuinely supports: write "end-to-end recruitment", "applicant databases", or "Microsoft Office" exactly as the job does,
   not "hiring process", "candidate records", or "MS tools".
-- Front-load the job's most important "must" keywords near the start of the summary.
+- Front-load the job's most important supported "must" keywords near the start of the summary.
 - Where the job uses both a spelled-out term and its acronym, include both (e.g. "Applicant Tracking System (ATS)").
 - Plain text only and ATS friendly — standard words, no symbols, slashes, emojis, tables, or special characters that break ATS parsing. Use
   the candidate's standard job-title vocabulary, never an invented hybrid title.
+- Do not keyword-stuff. A summary that reads like a list of terms is a failure.
 
 Content:
 - Surface the points most relevant to THIS job, choosing from (not limited to): industry-relevant experience and the
   strongest quantified outcomes, decisive credentials (degrees — especially for early-career candidates — certifications,
   licenses), languages, and the tools the job names.
-- Start with the candidate's current source-backed title and years of experience, while leading with value. If the profile
-  shows less than 1 year of experience, or the years are not clearly supported, omit the years rather than guessing.
+- Include years of experience only when the JD asks for YoE or the profile clearly supports 2+ years. Omit YoE when it is
+  unclear, under 2 years, unsupported, or would weaken positioning. Never invent or round up experience.
 - If the job position is not relevant to the candidate's current experience, do not start by claiming the target role as an
   established identity. Prefer a value-led transition opener such as "[Current title] bringing [transferable strength] to
   [target role] roles..." or "[Current title] pursuing [target role] opportunities through [source-backed evidence]...".
   Use "Aspiring [target role]" only when the profile has little direct or adjacent evidence and the framing would otherwise
   overclaim.
+- For aligned roles, lead with the source-backed role identity, supported YoE when useful, exact JD-aligned tools/processes,
+  and one concrete proof point.
+- For senior candidates, prioritize scope, leadership, business/process ownership, scale, and outcomes over tool stuffing.
+- For junior candidates, prioritize education, projects, internships, tools, and practical evidence without faking depth.
 - Lead with the job's headline "must" requirements the candidate genuinely supports. Never lead with an "Intern" or trainee
   title when a stronger role exists in the profile.
 - Every summaryClaims.text value must appear verbatim as a contiguous span inside the summary. Include every mandatory claim
@@ -199,7 +211,8 @@ unsupported title/seniority, misleading positioning, or a core score below 4. Re
 the resume, requirements covered only as skills when stronger bullet evidence exists, excessive skill pruning, and an
 underfilled page with unused relevant evidence. For the summary, report omitted mandatory decisive matches, claim text that
 does not occur in the prose, generic reuse of the base summary despite a different blueprint, unsupported target identity,
-and unmarked inferred industry context. Avoid cosmetic churn.`;
+unmarked inferred industry context, bloated 4+ line summaries, weak first-line value, unsupported YoE, generic filler,
+keyword stuffing, and career-shift overclaiming. Avoid cosmetic churn.`;
 
 export const resumeRepairPrompt = `${honestyRules}${writingStyle}
 Repair only the content identified by the supplied deterministic and critic findings. Keep all valid content and evidence

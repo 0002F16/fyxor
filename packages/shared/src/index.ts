@@ -1,5 +1,11 @@
 import { z } from "zod";
 
+// The extension is locked to the production VPS API — there is no user-facing
+// way to point it elsewhere. Kept as a named constant (rather than inlined)
+// so it's the single place to change for a future deploy, and so the schema
+// below can force stored/incoming values back to it.
+export const PRODUCTION_API_BASE_URL = "https://api-76-13-177-250.sslip.io";
+
 export const aiProviderSchema = z.enum(["deepseek-api"]);
 export const tailoringEngineSchema = z.enum(["builtin", "ccc"]);
 export const evidenceStatusSchema = z.enum(["verified", "needs-review", "stale", "unsupported", "legacy-unverified"]);
@@ -246,10 +252,20 @@ export const evidencePlanSchema = z.object({
       "education-led",
       "executive"
     ]).optional(),
+    archetype: z.enum(["aligned", "career-shifter", "senior", "junior", "thin-evidence"]).optional(),
     positioningStrategy: z.string().optional(),
+    openingFrame: z.string().optional(),
     targetIdentityAllowed: z.boolean().optional(),
     decisiveRequirementIds: z.array(z.string()).optional(),
-    claimIds: z.array(z.string()).optional()
+    claimIds: z.array(z.string()).optional(),
+    mustUseKeywords: z.array(z.string()).optional(),
+    proofPoints: z.array(z.string()).optional(),
+    mustAvoidClaims: z.array(z.string()).optional(),
+    includeYearsOfExperience: z.object({
+      include: z.boolean(),
+      years: z.number().int().nonnegative().optional(),
+      reason: z.string()
+    }).optional()
   }).optional(),
   roles: z.array(z.object({
     sourceExperienceId: z.string(),
@@ -332,6 +348,7 @@ export const tailoredCvSchema = z.object({
   skillCategories: z.record(z.array(z.string())).default({}),
   certifications: z.array(z.string()).default([]),
   languages: z.array(languageSchema).default([]),
+  projects: z.array(projectSchema).default([]),
   sectionOrder: z.array(z.string()).default([]),
   style: cvStyleSchema.default({}),
   dismissedChecks: z.array(z.string()).default([]),
@@ -417,6 +434,11 @@ export const tailoringJobSchema = z.object({
   // to the job currently on screen — preventing a finished job from hijacking
   // the UI for a different, freshly selected job.
   jobKey: z.string().default(""),
+  // Human-readable job identity, so in-flight runs can be rendered as labeled
+  // rows/cards in the Applications views before they become ApplicationRecords.
+  // Default to "" so existing stored jobs and migrateStorage stay valid.
+  jobTitle: z.string().default(""),
+  jobCompany: z.string().default(""),
   // Epoch ms when a "running" job started, so the popup can detect a run
   // orphaned by a terminated service worker and surface it as an error.
   startedAt: z.number().default(0)
@@ -450,7 +472,9 @@ export const storageStateSchema = z.object({
   tailoringJobs: z.record(tailoringJobSchema).default({}),
   auth: authSessionSchema.nullable().default(null),
   settings: z.object({
-    apiBaseUrl: z.string().default("https://api-76-13-177-250.sslip.io"),
+    // Any stored/incoming value is ignored — the extension only ever talks to
+    // the production VPS API. See PRODUCTION_API_BASE_URL above.
+    apiBaseUrl: z.any().transform(() => PRODUCTION_API_BASE_URL),
     aiProvider: aiProviderSchema.catch("deepseek-api").default("deepseek-api"),
     providerDefaultMigrated: z.boolean().default(false),
     tailoringEngine: tailoringEngineSchema.default("builtin"),
@@ -506,7 +530,7 @@ export const emptyStorageState = (): StorageState => ({
   tailoringJobs: {},
   auth: null,
   settings: {
-    apiBaseUrl: "https://api-76-13-177-250.sslip.io",
+    apiBaseUrl: PRODUCTION_API_BASE_URL,
     aiProvider: "deepseek-api",
     providerDefaultMigrated: true,
     tailoringEngine: "builtin",
@@ -559,14 +583,14 @@ export function markTailoredTextStale(cv: TailoredCv, section: "summary" | "expe
     return {
       ...cv,
       summaryClaims: cv.summaryClaims.map((claim) => ({ ...claim, evidenceStatus: "stale" })),
-      readiness: "blocked"
+      readiness: "needs-source-update"
     };
   }
   if (section === "skills") {
     return {
       ...cv,
       skillEvidence: cv.skillEvidence.map((skill) => ({ ...skill, evidenceStatus: "stale" })),
-      readiness: "blocked"
+      readiness: "needs-source-update"
     };
   }
   return {
@@ -580,7 +604,7 @@ export function markTailoredTextStale(cv: TailoredCv, section: "summary" | "expe
           : { ...bullet, evidenceStatus: "stale" as const })
       }
       : experience),
-    readiness: "blocked"
+    readiness: "needs-source-update"
   };
 }
 
@@ -715,7 +739,7 @@ export function applyRegeneratedSection(
 // `sectionOrder` on a profile/CV stores a user-chosen permutation of these; an
 // empty array means "use the default". Both the canvas and the PDF/DOCX export
 // resolve the effective order through `effectiveSectionOrder` so they stay in sync.
-export const SECTION_IDS = ["summary", "experience", "skills", "certifications", "languages", "education"] as const;
+export const SECTION_IDS = ["summary", "experience", "projects", "skills", "certifications", "languages", "education"] as const;
 export type SectionId = (typeof SECTION_IDS)[number];
 export const DEFAULT_SECTION_ORDER: SectionId[] = [...SECTION_IDS];
 

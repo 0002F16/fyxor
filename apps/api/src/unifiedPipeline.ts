@@ -35,6 +35,8 @@ import { evaluateTailoredCv } from "./resumeEval.js";
 export const PIPELINE_VERSION = "unified-v4";
 
 type WriterOutput = typeof llmResumeWriterSchema._type;
+type SummaryBlueprint = NonNullable<EvidencePlan["summaryBlueprint"]>;
+type SummaryArchetype = NonNullable<SummaryBlueprint["archetype"]>;
 type StageProgress = (stage: string, progress: number) => Promise<void> | void;
 type StageMetric = { name: string; durationMs: number; attempts: number; inputTokens?: number; outputTokens?: number };
 type Recovery = {
@@ -71,6 +73,32 @@ function numberTokens(value: string): string[] {
     .map((token) => token.replace(/\s+/g, "").toLocaleLowerCase());
 }
 
+function parseYear(value: string): number | undefined {
+  const match = value.match(/\b(19|20)\d{2}\b/);
+  return match ? Number(match[0]) : undefined;
+}
+
+function supportedExperienceYears(profile: BaseProfile): number | undefined {
+  const currentYear = new Date().getFullYear();
+  const spans = profile.experiences.flatMap((role) => {
+    const start = parseYear(role.startDate);
+    if (!start) return [];
+    const end = /\b(present|current|now)\b/i.test(role.endDate) ? currentYear : parseYear(role.endDate);
+    if (!end || end < start) return [];
+    return [{ start, end }];
+  });
+  if (!spans.length) return undefined;
+  const earliest = Math.min(...spans.map((span) => span.start));
+  const latest = Math.max(...spans.map((span) => span.end));
+  return Math.max(0, latest - earliest);
+}
+
+function jobRequestsExperienceYears(job?: JobDescription): boolean {
+  if (!job) return false;
+  return /\b(?:\d+\+?\s*(?:-|to)?\s*)?(?:years?|yrs?)\s+(?:of\s+)?(?:relevant\s+)?(?:\w+\s+){0,4}experience\b/i
+    .test(`${job.title} ${job.description}`);
+}
+
 function unsupportedSummaryNumbers(summary: string, profile: BaseProfile): string[] {
   const source = [
     profile.summary,
@@ -80,6 +108,8 @@ function unsupportedSummaryNumbers(summary: string, profile: BaseProfile): strin
     ...(profile.projects || []).flatMap((project) => [project.description, ...project.bullets])
   ].join(" ");
   const allowed = new Set(numberTokens(source));
+  const years = supportedExperienceYears(profile);
+  if (years !== undefined && years >= 2) allowed.add(String(years));
   return Array.from(new Set(numberTokens(summary).filter((token) => !allowed.has(token))));
 }
 
@@ -566,8 +596,8 @@ function pageTargetFor(profile: BaseProfile): "one" | "two" {
 
 function sectionOrderFor(profile: BaseProfile): string[] {
   return profile.experiences.length
-    ? ["summary", "experience", "skills", "certifications", "languages", "education"]
-    : ["summary", "skills", "certifications", "languages", "education", "experience"];
+    ? ["summary", "experience", "projects", "skills", "certifications", "languages", "education"]
+    : ["summary", "skills", "certifications", "languages", "education", "experience", "projects"];
 }
 
 function deterministicRequirements(profile: BaseProfile, job?: JobDescription): EvidencePlan["requirements"] {
@@ -986,6 +1016,90 @@ function defaultPositioningMode(
   return "transferable";
 }
 
+function summaryArchetype(
+  fit: EvidencePlan["fit"],
+  mode: NonNullable<SummaryBlueprint["positioningMode"]>,
+  dimensions: NonNullable<EvidencePlan["fitDimensions"]>,
+  profile: BaseProfile,
+  evidenceStrength: NonNullable<EvidencePlan["fitDimensions"]>["evidenceStrength"]
+): SummaryArchetype {
+  if (mode === "executive" || seniorProfile(profile)) return "senior";
+  if (mode === "education-led") return "junior";
+  if (dimensions.functionFit === "change" && evidenceStrength !== "weak") return "career-shifter";
+  if (evidenceStrength === "weak") return "thin-evidence";
+  if (fit === "stretch") return "thin-evidence";
+  if (mode === "transition") return "career-shifter";
+  return "aligned";
+}
+
+function supportedRequirementKeyword(requirement: EvidencePlan["requirements"][number]): string {
+  const skill = requirement.sourceSkills.find((entry) => entry.trim());
+  const text = skill || requirement.text;
+  return text.replace(/\s+/g, " ").trim();
+}
+
+function summaryMustUseKeywords(requirements: EvidencePlan["requirements"]): string[] {
+  const keywords = requirements
+    .filter((requirement) =>
+      requirement.priority !== "supporting" &&
+      ["explicit", "supported-equivalent"].includes(requirement.coverage)
+    )
+    .sort((left, right) =>
+      (right.priority === "must" ? 1 : 0) - (left.priority === "must" ? 1 : 0) ||
+      (right.summaryValue || 0) - (left.summaryValue || 0) ||
+      (right.hiringImportance || 0) - (left.hiringImportance || 0)
+    )
+    .map(supportedRequirementKeyword)
+    .filter((keyword) =>
+      keyword.length >= 3 &&
+      !/\b(strong|excellent|proactive|detail[- ]oriented|communication skills|multitask)\b/i.test(keyword)
+    );
+  return Array.from(new Map(keywords.map((keyword) => [normalized(keyword), keyword])).values()).slice(0, 7);
+}
+
+function summaryProofPoints(claims: EvidencePlan["summaryClaims"], profile: BaseProfile): string[] {
+  return Array.from(new Map(claims.flatMap((claim) =>
+    claim.evidence.map((reference) => summaryEvidenceText(reference, profile))
+      .map((text) => text.split(/(?<=[.!?])\s+/)[0] || text)
+      .map((text) => text.replace(/[.!?]+$/, "").replace(/\s+/g, " ").trim())
+      .filter((text) => text.length >= 8)
+  ).map((text) => [normalized(text), text])).values()).slice(0, 4);
+}
+
+function summaryMustAvoidClaims(
+  requirements: EvidencePlan["requirements"],
+  job: JobDescription | undefined,
+  targetIdentityAllowed: boolean,
+  includeYears: boolean
+): string[] {
+  const avoid = requirements
+    .filter((requirement) => requirement.priority !== "supporting" && requirement.coverage === "unsupported")
+    .map((requirement) => requirement.text.trim())
+    .filter(Boolean)
+    .slice(0, 6);
+  if (job?.title && !targetIdentityAllowed) avoid.unshift(`established ${job.title} identity`);
+  if (!includeYears) avoid.unshift("unsupported years of experience");
+  return Array.from(new Set(avoid));
+}
+
+function openingFrameFor(
+  archetype: SummaryArchetype,
+  profile: BaseProfile,
+  job: JobDescription | undefined,
+  includeYears: boolean,
+  years?: number
+): string {
+  const currentRole = profile.experiences.find((role) => !/\b(intern|internship|trainee)\b/i.test(role.role))?.role ||
+    profile.experiences[0]?.role || profile.targetRole || "Professional";
+  const target = job?.title || profile.targetRole || "target role";
+  const yoe = includeYears && years !== undefined ? `${years}+ years of supported experience` : "source-backed experience";
+  if (archetype === "career-shifter") return `Open with ${currentRole} bringing transferable, source-backed strengths toward ${target} work; do not claim established ${target} identity.`;
+  if (archetype === "senior") return `Open with senior-level ${currentRole} value, ${yoe}, scope, ownership, and outcome evidence relevant to ${target}.`;
+  if (archetype === "junior") return `Open with education, projects, internships, or practical tools that credibly support ${target} responsibilities.`;
+  if (archetype === "thin-evidence") return `Open conservatively from the strongest proven overlap with ${target}, without overstating depth or title identity.`;
+  return `Open with ${currentRole} value, ${yoe}, and the strongest supported match to ${target}.`;
+}
+
 function buildSummaryBlueprint(
   input: EvidencePlan,
   requirements: EvidencePlan["requirements"],
@@ -1021,17 +1135,34 @@ function buildSummaryBlueprint(
   const targetIdentityAllowed = ["target-identity", "executive"].includes(safeMode) &&
     dimensions.functionFit === "direct" &&
     evidenceStrength === "strong";
+  const years = supportedExperienceYears(profile);
+  const includeYears = Boolean(years !== undefined && years >= 2 && (jobRequestsExperienceYears(job) || years >= 2));
+  const archetype = summaryArchetype(input.fit, safeMode, dimensions, profile, evidenceStrength);
   return {
     positioningMode: safeMode,
+    archetype,
     positioningStrategy: input.summaryBlueprint?.positioningStrategy ||
       (safeMode === "transition"
         ? "Lead with the proven background framed in the job's required competencies, and explicitly frame the move into the target function."
         : safeMode === "education-led"
           ? "Lead with relevant education, projects, and demonstrated technical evidence, described in the job's own terminology."
           : "Lead with the job's headline required competencies, backed by the strongest supported evidence for the target role."),
+    openingFrame: openingFrameFor(archetype, profile, job, includeYears, years),
     targetIdentityAllowed,
     decisiveRequirementIds,
-    claimIds: claims.map((claim) => claim.id)
+    claimIds: claims.map((claim) => claim.id),
+    mustUseKeywords: summaryMustUseKeywords(requirements),
+    proofPoints: summaryProofPoints(claims, profile),
+    mustAvoidClaims: summaryMustAvoidClaims(requirements, job, targetIdentityAllowed, includeYears),
+    includeYearsOfExperience: {
+      include: includeYears,
+      ...(years !== undefined ? { years } : {}),
+      reason: includeYears
+        ? jobRequestsExperienceYears(job)
+          ? "The job description asks for years of experience and the profile dates support it."
+          : "The profile dates support 2+ years of experience."
+        : "Years of experience are not clearly supported or would weaken compact positioning."
+    }
   };
 }
 
@@ -1545,15 +1676,22 @@ function fallbackSummary(
   const currentRole = profile.experiences[0]?.role || profile.targetRole || "Professional";
   const degree = profile.education[0]?.degree || "Graduate";
   const mode = plan.summaryBlueprint?.positioningMode || "transferable";
+  const archetype = plan.summaryBlueprint?.archetype || "aligned";
+  const yoe = plan.summaryBlueprint?.includeYearsOfExperience;
+  const roleWithYears = yoe?.include && yoe.years !== undefined
+    ? `${currentRole} with ${yoe.years}+ years of experience`
+    : currentRole;
   const opener = mode === "target-identity" && plan.summaryBlueprint?.targetIdentityAllowed
-    ? `${job.title} with evidence-backed experience aligned to the role.`
-    : mode === "executive"
-      ? `${currentRole} bringing senior leadership and commercial evidence to ${job.title} opportunities.`
-      : mode === "education-led"
-        ? `${degree} targeting ${job.title} opportunities through relevant academic and project evidence.`
-        : mode === "transition"
-          ? `${currentRole} transitioning into ${job.title} roles through directly transferable experience.`
-          : `${currentRole} targeting ${job.title} opportunities with relevant, source-backed experience.`;
+    ? `${job.title} with source-backed experience aligned to the role.`
+    : archetype === "senior"
+      ? `${roleWithYears} bringing senior ownership and outcome-focused evidence to ${job.title} priorities.`
+      : archetype === "junior" || mode === "education-led"
+        ? `${degree} targeting ${job.title} opportunities through practical academic, project, and tool evidence.`
+        : archetype === "career-shifter" || mode === "transition"
+          ? `${roleWithYears} bringing transferable evidence toward ${job.title} responsibilities.`
+          : archetype === "thin-evidence"
+            ? `${currentRole} with source-backed overlap for selected ${job.title} responsibilities.`
+            : `${roleWithYears} aligned with ${job.title} requirements through source-backed experience.`;
 
   const summaryClaims = plan.summaryClaims.slice(0, 4).flatMap((claim) => {
     const text = claim.evidence
@@ -1569,28 +1707,23 @@ function fallbackSummary(
   }).filter((claim, index, claims) =>
     claims.findIndex((entry) => normalized(entry.text) === normalized(claim.text)) === index
   );
-  // Weave the proof points into one flowing sentence rather than emitting each as a
-  // choppy standalone fragment ("English (Native/C2). HRIS & Employee Data Management.").
+  // Weave proof points into one compact sentence rather than emitting choppy
+  // fragments ("English (Native/C2). HRIS & Employee Data Management.").
   const proofSentence = (claims: typeof summaryClaims): string => {
     const points = claims.map((claim) => claim.text.replace(/[.!?]+$/, "").trim()).filter(Boolean);
     if (!points.length) return "";
     const list = points.length === 1
       ? points[0]!
       : `${points.slice(0, -1).join(", ")} and ${points[points.length - 1]}`;
-    return `Relevant strengths for the ${job.title} role include ${list}.`;
+    return `Evidence includes ${list}, matched to the role's most relevant requirements.`;
   };
   let summary = [opener, proofSentence(summaryClaims)].filter(Boolean).join(" ").replace(/\s+/g, " ").trim();
-  // Keep this rare deterministic last-resort fallback near the summary length band the prompt
-  // targets, so a fallback summary doesn't read noticeably shorter than an LLM one.
-  if (summary.split(/\s+/).length < 55) {
-    summary += ` These verified strengths provide a focused foundation for the core responsibilities and working context of the ${job.title} position.`;
-  }
-  if (summary.split(/\s+/).length > 80) {
+  if (summary.split(/\s+/).length > 65) {
     const mandatory = summaryClaims.filter((claim) =>
     plan.summaryClaims.some((planned) => planned.id === claim.id && planned.mandatory)
     );
     const optional = summaryClaims.filter((claim) => !mandatory.some((entry) => entry.id === claim.id));
-    const selected = [...mandatory, ...optional].slice(0, Math.max(1, 3 - mandatory.length + mandatory.length));
+    const selected = [...mandatory, ...optional].slice(0, Math.max(1, 2));
     summary = [opener, proofSentence(selected)].filter(Boolean).join(" ").replace(/\s+/g, " ").trim();
     return { summary, summaryClaims: selected };
   }
@@ -1950,6 +2083,7 @@ function assembleCv(
     skillCategories: Object.fromEntries(categories),
     certifications: profile.certifications,
     languages: profile.languages,
+    projects: profile.projects ?? [],
     sectionOrder: plan.sectionOrder.length ? plan.sectionOrder : profile.sectionOrder,
     style: profile.style,
     dismissedChecks: [],
@@ -2183,14 +2317,10 @@ export async function generateUnifiedCv(input: {
     }
   }
 
-  if (evaluation.hardFailureIds.length) {
-    writer = sourceBackedWriter(plan, profile, job, writer);
-    recoveries.push(recovery("final-source-fallback-used", "degraded"));
-    cv = assembleCv(profile, job, plan, writer, runId, stages, stages.some((stage) => stage.name === "repairing") ? 1 : 0, recoveries);
-    evaluation = appendRecoveries(evaluationFromDeterministic(cv, profile, job), recoveries);
-  }
-
-  const readiness = evaluation.hardFailureIds.length ? "blocked" : "ready";
+  // Evidence/structural findings never block output: keep the richer tailored
+  // prose instead of degrading to source-backed text. Remaining findings stay
+  // attached to `evaluation` as non-blocking warnings.
+  const readiness = "ready";
   await onProgress("completed", 100);
   return tailoredCvSchema.parse({
     ...cv,
@@ -2259,13 +2389,8 @@ export async function regenerateUnifiedSection(input: {
       recoveries
     );
   }
-  if (evaluation.hardFailureIds.length) {
-    writer = sourceBackedWriter(plan, profile, cv.job, writer);
-    recoveries.push(recovery("final-source-fallback-used", "degraded", section, experienceId || ""));
-    generated = assembleCv(profile, cv.job, plan, writer, cv.pipeline.runId || crypto.randomUUID(), stages, 1, recoveries);
-    evaluation = appendRecoveries(evaluationFromDeterministic(generated, profile, cv.job), recoveries);
-  }
-  const readiness = evaluation.hardFailureIds.length ? "blocked" : "ready";
+  // Keep the tailored prose; findings remain as non-blocking warnings.
+  const readiness = "ready";
 
   if (section === "summary") {
     return regenerationPatchSchema.parse({

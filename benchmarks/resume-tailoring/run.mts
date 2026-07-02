@@ -23,6 +23,10 @@ function includes(summary: string, term: string): boolean {
   return summary.toLocaleLowerCase().includes(term.toLocaleLowerCase());
 }
 
+function estimatedSummaryLines(summary: string): number {
+  return Math.ceil(summary.replace(/\s+/g, " ").trim().length / 95);
+}
+
 async function main() {
   const [{ createGenerator, providerStatus }, { generateUnifiedCv }, { makePdfWithAudit }, { evaluateTailoredCv }] =
     await Promise.all([
@@ -102,9 +106,16 @@ async function main() {
         detail: `Positioning mode is ${fixture.expectation.positioningMode}`
       });
       assertions.push({
-        id: "summary-length",
-        pass: summary.split(/\s+/).filter(Boolean).length >= 35 && summary.split(/\s+/).filter(Boolean).length <= 100,
-        detail: "Summary contains 35-100 words"
+        id: "summary-archetype",
+        pass: cv.evidencePlan?.summaryBlueprint?.archetype === fixture.expectation.summaryArchetype,
+        detail: `Summary archetype is ${fixture.expectation.summaryArchetype}`
+      });
+      const summaryWords = summary.split(/\s+/).filter(Boolean).length;
+      const summaryLines = estimatedSummaryLines(summary);
+      assertions.push({
+        id: "summary-compactness",
+        pass: summaryWords <= 70 && summaryLines <= 4,
+        detail: `Summary fits compact target (${summaryWords} words, ~${summaryLines} rendered lines)`
       });
       assertions.push({
         id: "claim-text-present",

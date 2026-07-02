@@ -80,6 +80,7 @@ function tailored(overrides: Partial<TailoredCv> = {}): TailoredCv {
     skillCategories: { Engineering: ["TypeScript", "API Design", "CI/CD"] },
     certifications: [],
     languages: [],
+    projects: [],
     sectionOrder: [],
     style: { preset: "modern" },
     dismissedChecks: [],
@@ -172,5 +173,79 @@ describe("evaluateTailoredCv", () => {
     const result = evaluateTailoredCv(profile, job, cv);
     expect(result.checks.find((item) => item.id === "summary-inference-review")?.status).toBe("warn");
     expect(result.hardFailures).toEqual([]);
+  });
+
+  it("fails unsupported or inflated summary YoE claims", () => {
+    const cv = tailored({
+      summary: "Backend Engineer with 10 years of TypeScript API delivery and CI/CD experience for production platforms.",
+      summaryClaims: [{
+        id: "claim-1",
+        text: "TypeScript API delivery and CI/CD experience",
+        evidence: [{ sourceExperienceId: "source-1", sourceBulletIndexes: [0, 1] }],
+        evidenceStatus: "verified"
+      }]
+    });
+    const result = evaluateTailoredCv(profile, job, cv);
+    expect(result.hardFailures.map((item) => item.id)).toContain("summary-yoe-support");
+  });
+
+  it("warns when JD-requested supported YoE is omitted", () => {
+    const result = evaluateTailoredCv(profile, {
+      ...job,
+      description: `${job.description} Candidates should have 3 years of backend experience.`
+    }, tailored());
+    expect(result.checks.find((item) => item.id === "summary-yielded-yoe")?.status).toBe("warn");
+  });
+
+  it("warns on bloated, generic, or keyword-stuffed summaries", () => {
+    const cv = tailored({
+      summary: "Highly motivated, detail-oriented, results-driven Backend Engineer with excellent communication skills, TypeScript, API Design, CI/CD, cloud, databases, monitoring, testing, documentation, stakeholder management, delivery ownership, platform reliability, scalable services, incident response, observability, agile delivery, cross-functional collaboration, roadmap planning, technical documentation, troubleshooting, optimization, automation, and modern engineering team experience.",
+      summaryClaims: [{
+        id: "claim-1",
+        text: "TypeScript API delivery and CI/CD experience",
+        evidence: [{ sourceExperienceId: "source-1", sourceBulletIndexes: [0, 1] }],
+        evidenceStatus: "verified"
+      }]
+    });
+    const result = evaluateTailoredCv(profile, job, cv);
+    expect(result.checks.find((item) => item.id === "summary-visual-compactness")?.status).toBe("warn");
+    expect(result.checks.find((item) => item.id === "summary-generic-filler")?.status).toBe("warn");
+    expect(result.checks.find((item) => item.id === "summary-keyword-stuffing")?.status).toBe("warn");
+  });
+
+  it("checks blueprint keyword coverage, proof density, and career-shift framing", () => {
+    const cv = tailored({
+      summary: "Backend Engineer with TypeScript delivery experience for production APIs.",
+      summaryClaims: [{
+        id: "claim-1",
+        text: "TypeScript delivery experience",
+        evidence: [{ sourceExperienceId: "source-1", sourceBulletIndexes: [0] }],
+        evidenceStatus: "verified"
+      }],
+      evidencePlan: {
+        version: "3",
+        fit: "stretch",
+        requirements: [],
+        summaryClaims: [],
+        summaryBlueprint: {
+          positioningMode: "transition",
+          archetype: "career-shifter",
+          targetIdentityAllowed: false,
+          mustUseKeywords: ["TypeScript", "CI/CD", "API Design"],
+          proofPoints: ["Built TypeScript APIs used by 12 internal teams.", "Reduced deployment time by 25% through CI automation."],
+          mustAvoidClaims: ["established Backend Engineer identity"],
+          includeYearsOfExperience: { include: false, reason: "Career shift" }
+        },
+        roles: [],
+        skills: [],
+        certifications: [],
+        sectionOrder: [],
+        pageTarget: "one"
+      }
+    });
+    const result = evaluateTailoredCv(profile, job, cv);
+    expect(result.checks.find((item) => item.id === "summary-archetype-fit")?.status).toBe("warn");
+    expect(result.checks.find((item) => item.id === "summary-keyword-coverage")?.status).toBe("warn");
+    expect(result.checks.find((item) => item.id === "summary-proof-density")?.status).toBe("warn");
   });
 });

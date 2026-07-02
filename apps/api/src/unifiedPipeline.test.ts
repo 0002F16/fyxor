@@ -202,14 +202,80 @@ describe("unified evidence-first pipeline", () => {
     const patch = await regenerateUnifiedSection({ generator: { generate }, profile, cv, section: "summary" });
 
     // The regenerate summary call carries the same shared spec as a fresh tailor.
-    expect(summaryInstruction).toContain("3 short sentences");
-    expect(summaryInstruction).toContain("40-55");
-    expect(summaryInstruction).toContain("[Current title] bringing [transferable strength]");
+    expect(summaryInstruction).toContain("3-4 rendered resume lines");
+    expect(summaryInstruction).toContain("40-65");
+    expect(summaryInstruction).toContain("transition opener");
     expect(summaryInstruction).toContain("Use \"Aspiring [target role]\" only");
-    expect(summaryInstruction).toContain("Lead with value ALWAYS");
+    expect(summaryInstruction).toContain("opening words must immediately show role-relevant value");
     if (patch.section !== "summary") throw new Error("expected a summary patch");
     expect(patch.summary).toBe(briefSummary);
     expect(patch.summary).not.toMatch(/transitioning into/i);
+  });
+
+  it("builds compact summary blueprint guidance for an aligned role with supported YoE", () => {
+    const result = sanitizeEvidencePlan(plan, profile, {
+      ...job,
+      description: `${job.description} Three years of backend delivery experience preferred.`
+    });
+
+    expect(result.plan.summaryBlueprint).toMatchObject({
+      archetype: "aligned",
+      targetIdentityAllowed: false
+    });
+    expect(result.plan.summaryBlueprint?.includeYearsOfExperience?.include).toBe(true);
+    expect(result.plan.summaryBlueprint?.includeYearsOfExperience?.years).toBeGreaterThanOrEqual(2);
+    expect(result.plan.summaryBlueprint?.mustUseKeywords).toContain("TypeScript");
+    expect(result.plan.summaryBlueprint?.proofPoints?.join(" ")).toContain("TypeScript APIs");
+  });
+
+  it("uses transition-safe summary guidance for a functional career shift", () => {
+    const shiftPlan = {
+      ...plan,
+      fit: "stretch" as const,
+      fitDimensions: { functionFit: "change" as const, industryFit: "unknown" as const, seniorityFit: "unknown" as const, evidenceStrength: "partial" as const },
+      requirements: [{
+        id: "req-kyc",
+        text: "KYC evidence review",
+        priority: "must" as const,
+        coverage: "supported-equivalent" as const,
+        evidence: [{ sourceExperienceId: "source-1", sourceBulletIndexes: [0] }],
+        summaryEvidence: [{ sourceExperienceId: "source-1", sourceBulletIndexes: [0] }],
+        sourceSkills: []
+      }],
+      summaryClaims: [{
+        id: "claim-kyc",
+        objective: "Show transferable investigation evidence for KYC",
+        evidence: [{ sourceExperienceId: "source-1", sourceBulletIndexes: [0] }],
+        requirementIds: ["req-kyc"]
+      }]
+    };
+    const result = sanitizeEvidencePlan(shiftPlan, profile, {
+      ...job,
+      title: "KYC Analyst",
+      description: "Review KYC evidence and investigate risk indicators."
+    });
+
+    expect(result.plan.summaryBlueprint?.archetype).toBe("career-shifter");
+    expect(result.plan.summaryBlueprint?.targetIdentityAllowed).toBe(false);
+    expect(result.plan.summaryBlueprint?.openingFrame).toMatch(/do not claim established KYC Analyst identity/i);
+    expect(result.plan.summaryBlueprint?.mustAvoidClaims).toContain("established KYC Analyst identity");
+  });
+
+  it("classifies education-led and senior summary archetypes", () => {
+    const juniorProfile: BaseProfile = {
+      ...profile,
+      targetRole: "Data Analyst",
+      experiences: [{ ...profile.experiences[0]!, role: "Data Intern" }],
+      projects: [{ id: "p1", title: "Dashboard", description: "Built Tableau dashboards.", bullets: ["Cleaned datasets in Python."], technologies: ["Python", "Tableau"] }]
+    };
+    expect(sanitizeEvidencePlan(plan, juniorProfile, job).plan.summaryBlueprint?.archetype).toBe("junior");
+
+    const seniorProfile: BaseProfile = {
+      ...profile,
+      positioning: { level: "Senior", strategy: "", notes: "" },
+      experiences: [{ ...profile.experiences[0]!, role: "Engineering Director" }]
+    };
+    expect(sanitizeEvidencePlan(plan, seniorProfile, job).plan.summaryBlueprint?.archetype).toBe("senior");
   });
 
   it("keeps the LLM summary and re-derives claims when the LLM's own claims don't match the plan", async () => {
@@ -371,7 +437,7 @@ describe("unified evidence-first pipeline", () => {
     expect(cv.readiness).toBe("ready");
   });
 
-  it("returns a completed blocked CV when the base profile has no experience evidence", async () => {
+  it("returns a ready CV with findings as warnings when the base profile has no experience evidence", async () => {
     const emptyProfile = { ...profile, experiences: [], summary: "", rawText: "" };
     const emptyPlan = { ...plan, summaryClaims: [], roles: [], skills: [], certifications: [] };
     const emptyWriter = { ...writer, summary: "", summaryClaims: [], roles: [], skillCategories: [], skillEvidence: [], certifications: [] };
@@ -379,7 +445,8 @@ describe("unified evidence-first pipeline", () => {
     const cv = await generateUnifiedCv({ generator: { generate }, profile: emptyProfile, job, runId: "run-empty" });
 
     expect(cv.experiences).toEqual([]);
-    expect(cv.readiness).toBe("blocked");
+    // Output is never blocked anymore; the finding surfaces as a non-blocking warning.
+    expect(cv.readiness).toBe("ready");
     expect(cv.evaluation?.hardFailureIds).toContain("ats-role-structure");
   });
 
@@ -513,7 +580,7 @@ describe("unified evidence-first pipeline", () => {
     expect(cv.skills).not.toContain("Tax Compliance");
     expect(cv.certifications).toEqual(accountingProfile.certifications);
     expect(cv.languages).toEqual(accountingProfile.languages);
-    expect(cv.sectionOrder.slice(0, 3)).toEqual(["summary", "experience", "skills"]);
+    expect(cv.sectionOrder.slice(0, 4)).toEqual(["summary", "experience", "projects", "skills"]);
     expect(cv.evidencePlan?.pageTarget).toBe("one");
     expect(cv.skillEvidence.find((skill) => skill.skill === "Communication")).toMatchObject({
       provenance: "inferred-baseline",
