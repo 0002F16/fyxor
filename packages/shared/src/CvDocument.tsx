@@ -32,6 +32,7 @@ export type ResumeDocument = {
   skillCategories: Record<string, string[]>;
   certifications: string[];
   languages: BaseProfile["languages"];
+  projects?: BaseProfile["projects"];
   sectionOrder?: string[];
   style?: CvStyle;
   job?: { title?: string };
@@ -190,7 +191,7 @@ function EditList({ items, editable, onChange, addLabel, placeholder, disc = tru
             </span>
           )}
           {editable && (
-            <button type="button" onClick={() => editRow(index, "")} className="cv-control absolute -right-6 top-0 text-muted hover:text-red-500" aria-label="Remove">
+            <button type="button" onClick={() => editRow(index, "")} className="cv-control absolute right-0 top-0 rounded-md bg-white/90 px-0.5 text-muted shadow-sm hover:text-red-500" aria-label="Remove">
               <X size={12} />
             </button>
           )}
@@ -264,6 +265,16 @@ export function CvDocument({ cv, headline: headlineProp, editable = false, lockE
     update({ education: [...cv.education, { id: makeId("edu"), school: "", degree: "", location: "", graduationDate: "", gpa: "", honors: "", coursework: [] }] });
   const removeEducation = (id: string) => update({ education: cv.education.filter((entry) => entry.id !== id) });
 
+  // Projects mirror certifications/languages: an optional section copied verbatim
+  // through tailoring, edited inline here. `projects` is optional on the document,
+  // so every read falls back to an empty array.
+  const projects = cv.projects ?? [];
+  const setProject = (id: string, patch: Partial<NonNullable<ResumeDocument["projects"]>[number]>) =>
+    update({ projects: projects.map((project) => (project.id === id ? { ...project, ...patch } : project)) });
+  const addProject = () =>
+    update({ projects: [...projects, { id: makeId("proj"), title: "", description: "", bullets: [], technologies: [] }] });
+  const removeProject = (id: string) => update({ projects: projects.filter((project) => project.id !== id) });
+
   // Skills are stored as { category: entries[] } plus a flat `skills` union the
   // export and stats read. Normalize legacy flat-only data into one "Skills"
   // category so editing is uniform, and keep the flat list synced on every edit.
@@ -284,6 +295,9 @@ export function CvDocument({ cv, headline: headlineProp, editable = false, lockE
   const education = editable ? cv.education : cv.education.filter(educationHasContent);
   const certifications = editable ? cv.certifications : cv.certifications.filter(Boolean);
   const languages = editable ? cv.languages : cv.languages.filter((language) => language.language);
+  const projectHasContent = (project: NonNullable<ResumeDocument["projects"]>[number]) =>
+    Boolean(project.title.trim() || project.description.trim() || project.bullets.some(Boolean) || project.technologies.some(Boolean));
+  const visibleProjects = editable ? projects : projects.filter(projectHasContent);
 
   // --- Section ordering -----------------------------------------------------
   // Resolve the stored order, decide which sections actually render as a movable
@@ -292,6 +306,7 @@ export function CvDocument({ cv, headline: headlineProp, editable = false, lockE
   const present: Record<SectionId, boolean> = {
     summary: editable || Boolean(cv.summary.trim()),
     experience: editable || cv.experiences.length > 0,
+    projects: visibleProjects.length > 0,
     skills: editable || categories.some(([, entries]) => entries.filter(Boolean).length > 0),
     certifications: certifications.length > 0,
     languages: languages.length > 0,
@@ -319,7 +334,7 @@ export function CvDocument({ cv, headline: headlineProp, editable = false, lockE
 
   const sections: Record<SectionId, ReactNode> = {
     summary: (editable || cv.summary.trim()) ? (
-      <Section title="Profile" contentBlock onRegenerate={onRegenerate && (() => onRegenerate("summary"))} busy={busy} {...moveProps("summary")}>
+      <Section title="Summary" contentBlock onRegenerate={onRegenerate && (() => onRegenerate("summary"))} busy={busy} {...moveProps("summary")}>
         <Text editable={editable} value={cv.summary} onCommit={(value) => update({ summary: value })} tag="p" placeholder="Write a short professional summary…" />
       </Section>
     ) : null,
@@ -345,7 +360,7 @@ export function CvDocument({ cv, headline: headlineProp, editable = false, lockE
               {(onRegenerate || editable) && (
                 // Controls live in the right gutter (absolute) so they never push
                 // the date text left — the canvas stays WYSIWYG with the export.
-                <span className="cv-control absolute -right-12 top-0 inline-flex items-center gap-0.5">
+                <span className="cv-control absolute right-0 top-0 inline-flex items-center gap-0.5 rounded-md bg-white/90 px-0.5 shadow-sm">
                   {onRegenerate && (
                     <button type="button" disabled={busy} onClick={() => onRegenerate("experience", experience.id)}
                       className="inline-flex items-center rounded-md px-1 py-0.5 text-emerald hover:bg-mint disabled:opacity-40" aria-label="Regenerate role">
@@ -382,6 +397,57 @@ export function CvDocument({ cv, headline: headlineProp, editable = false, lockE
       </Section>
     ) : null,
 
+    projects: visibleProjects.length > 0 ? (
+      <Section title="Projects" onRemove={editable ? () => update({ projects: [] }) : undefined} {...moveProps("projects")}>
+        <div className="space-y-2.5">
+          {visibleProjects.map((project) => (
+            <div data-cvblock="block" className="group/sec relative break-inside-avoid" key={project.id}>
+              <Text editable={editable} value={project.title} onCommit={(value) => setProject(project.id, { title: value })}
+                tag="p" className="font-semibold text-ink" placeholder="Project title" />
+              {editable && (
+                <span className="cv-control absolute right-0 top-0 inline-flex items-center gap-0.5 rounded-md bg-white/90 px-0.5 shadow-sm">
+                  <button type="button" onClick={() => removeProject(project.id)}
+                    className="inline-flex items-center rounded-md px-1 py-0.5 text-muted hover:text-red-500" aria-label="Remove project">
+                    <X size={12} />
+                  </button>
+                </span>
+              )}
+              {(editable || project.description) && (
+                <Text editable={editable} value={project.description} onCommit={(value) => setProject(project.id, { description: value })}
+                  tag="p" className="text-[12px] font-medium text-emerald" placeholder="Short description" />
+              )}
+              {(editable || project.bullets.filter(Boolean).length > 0) && (
+                <div className="mt-1">
+                  <EditList items={editable ? project.bullets : project.bullets.filter(Boolean)} editable={editable}
+                    onChange={(next) => setProject(project.id, { bullets: next.map((item) => typeof item === "string" ? item : item.text) })}
+                    addLabel="Add detail" placeholder="Describe the project or your role…" />
+                </div>
+              )}
+              {(editable || project.technologies.filter(Boolean).length > 0) && (
+                <p className="mt-0.5 flex flex-wrap items-baseline gap-x-1 text-[11.5px] text-muted">
+                  <span className="font-semibold text-ink">Tech:</span>
+                  <Text editable={editable} value={project.technologies.join(", ")}
+                    onCommit={(value) => setProject(project.id, { technologies: value.split(",").map((s) => s.trim()).filter(Boolean) })}
+                    className="flex-1" placeholder="Comma-separated technologies" />
+                </p>
+              )}
+            </div>
+          ))}
+          {editable && (
+            <button type="button" onClick={addProject}
+              className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald hover:underline">
+              <Plus size={12} /> Add project
+            </button>
+          )}
+        </div>
+      </Section>
+    ) : editable ? (
+      <button type="button" onClick={addProject}
+        className="mt-4 inline-flex items-center gap-1 text-[11px] font-semibold text-emerald hover:underline">
+        <Plus size={12} /> Add projects section
+      </button>
+    ) : null,
+
     skills: (editable || categories.some(([, entries]) => entries.filter(Boolean).length > 0)) ? (
       <Section title="Skills" onRegenerate={onRegenerate && (() => onRegenerate("skills"))} busy={busy} {...moveProps("skills")}>
         <div className="space-y-1">
@@ -405,7 +471,7 @@ export function CvDocument({ cv, headline: headlineProp, editable = false, lockE
                 </span>
                 <Text editable={editable} value={entries.join(", ")} onCommit={editEntries} className="flex-1" placeholder="Comma-separated skills" />
                 {editable && (
-                  <span className="cv-control absolute -right-14 top-0 inline-flex items-center gap-0.5">
+                  <span className="cv-control absolute right-0 top-0 inline-flex items-center gap-0.5 rounded-md bg-white/90 px-0.5 shadow-sm">
                     <button type="button" onClick={() => moveCategory(index - 1)} disabled={index === 0}
                       className="text-muted hover:text-emerald disabled:opacity-25" aria-label="Move skill group up">
                       <ChevronUp size={12} />
@@ -444,23 +510,36 @@ export function CvDocument({ cv, headline: headlineProp, editable = false, lockE
     ) : null,
 
     languages: languages.length > 0 ? (
-      <Section title="Languages" contentBlock {...moveProps("languages")}>
+      <Section title="Languages" contentBlock onRemove={editable ? () => update({ languages: [] }) : undefined} {...moveProps("languages")}>
         {editable ? (
           <div className="flex flex-wrap gap-x-3 gap-y-1">
             {cv.languages.map((language, index) => (
-              <span className="inline-flex items-center gap-1" key={index}>
+              <span className="group/row inline-flex items-center gap-1" key={index}>
                 <Editable value={language.language} placeholder="Language"
                   onCommit={(value) => update({ languages: cv.languages.map((item, i) => (i === index ? { ...item, language: value } : item)) })} />
                 <span className="text-muted">—</span>
                 <Editable value={language.level} placeholder="Level"
                   onCommit={(value) => update({ languages: cv.languages.map((item, i) => (i === index ? { ...item, level: value } : item)) })} />
+                <button type="button" onClick={() => update({ languages: cv.languages.filter((_, i) => i !== index) })}
+                  className="cv-control ml-1 inline-flex items-center text-muted hover:text-red-500" aria-label="Remove language">
+                  <X size={11} />
+                </button>
               </span>
             ))}
+            <button type="button" onClick={() => update({ languages: [...cv.languages, { language: "", level: "" }] })}
+              className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald hover:underline">
+              <Plus size={12} /> Add language
+            </button>
           </div>
         ) : (
           <p>{languages.map((language) => [language.language, language.level].filter(Boolean).join(" — ")).join("  ·  ")}</p>
         )}
       </Section>
+    ) : editable ? (
+      <button type="button" onClick={() => update({ languages: [{ language: "", level: "" }] })}
+        className="mt-4 inline-flex items-center gap-1 text-[11px] font-semibold text-emerald hover:underline">
+        <Plus size={12} /> Add languages section
+      </button>
     ) : null,
 
     education: (editable || education.length > 0) ? (
@@ -476,7 +555,7 @@ export function CvDocument({ cv, headline: headlineProp, editable = false, lockE
                 </span>
               </div>
               <button type="button" onClick={() => removeEducation(entry.id)}
-                className="cv-control absolute -right-6 top-0 inline-flex items-center rounded-md px-1 py-0.5 text-muted hover:text-red-500" aria-label="Remove education">
+                className="cv-control absolute right-0 top-0 inline-flex items-center rounded-md bg-white/90 px-1 py-0.5 text-muted shadow-sm hover:text-red-500" aria-label="Remove education">
                 <X size={12} />
               </button>
               <div className="flex items-baseline justify-between gap-3">
@@ -526,7 +605,7 @@ export function CvDocument({ cv, headline: headlineProp, editable = false, lockE
       ))}
       <header data-cvblock="block" className="group/sec relative border-b-2 border-deep pb-2.5 text-center">
         <Text editable={editable} value={cv.contact.name} onCommit={(value) => setContact("name", value)} placeholder="Your Name"
-          tag="h1" className="font-display text-[26px] font-bold leading-tight tracking-tight" />
+          tag="h1" className="font-display text-[30px] font-bold leading-tight tracking-tight" />
         {(editable && onCommitHeadline) ? (
           headline ? (
             <span className="mt-0.5 flex items-center justify-center gap-1">
